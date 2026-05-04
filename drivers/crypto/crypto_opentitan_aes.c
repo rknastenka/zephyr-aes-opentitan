@@ -28,8 +28,43 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 ------------------------------------------------------
 3. Register Offsets and Bitmasks (macro)
 
-#define 
+// Base Offsets for Registers (Keys, IV, Data)
+#define AES_KEY_SHARE0_0_REG_OFFSET 0x4
+#define AES_KEY_SHARE1_0_REG_OFFSET 0x24
+#define AES_IV_0_REG_OFFSET 0x44
+#define AES_DATA_IN_0_REG_OFFSET 0x54
+#define AES_DATA_OUT_0_REG_OFFSET 0x64
 
+// Control Register & Bitmasks
+#define AES_CTRL_SHADOWED_REG_OFFSET 0x74
+#define AES_CTRL_SHADOWED_OPERATION_OFFSET 0
+#define AES_CTRL_SHADOWED_OPERATION_VALUE_AES_ENC 0x1
+#define AES_CTRL_SHADOWED_OPERATION_VALUE_AES_DEC 0x2
+
+#define AES_CTRL_SHADOWED_MODE_OFFSET 2
+#define AES_CTRL_SHADOWED_MODE_VALUE_AES_ECB 0x1
+#define AES_CTRL_SHADOWED_MODE_VALUE_AES_CBC 0x2
+
+#define AES_CTRL_SHADOWED_KEY_LEN_OFFSET 8
+#define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_128 0x1
+#define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256 0x4
+
+#define AES_CTRL_SHADOWED_MANUAL_OPERATION_BIT 15
+
+// Trigger Register
+#define AES_TRIGGER_REG_OFFSET 0x80
+#define AES_TRIGGER_START_BIT 0
+
+// Status Register
+#define AES_STATUS_REG_OFFSET 0x84
+#define AES_STATUS_IDLE_BIT 0
+#define AES_STATUS_OUTPUT_VALID_BIT 3
+#define AES_STATUS_INPUT_READY_BIT 4
+
+The rest of the definitions in aes_regs.h cover advanced features 
+that fall outside the standard Zephyr OS Crypto API (<zephyr/crypto.h>). 
+like: Fault-Injection/PRNGs/GCM
+Including them now just adds dead code.
 ------------------------------------------------------
 4. Configuration Structure
 
