@@ -1,0 +1,3 @@
+source "drivers/crypto/Kconfig.opentitan_aes"
+
+# https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/crypto/Kconfig

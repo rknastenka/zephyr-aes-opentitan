@@ -1,0 +1,15 @@
+# Copyright (c) 2026, Bana Tawalbeh
+# SPDX-License-Identifier: Apache-2.0
+
+description: OpenTitan AES Hardware Accelerator
+
+compatible: "lowrisc,opentitan-aes"
+
+include: [base.yaml]
+
+# properties:
+#   interrupts:
+#     required: false
+
+# https://github.com/zephyrproject-rtos/zephyr/blob/main/dts/bindings/crypto/bflb%2Csec-eng-aes.yaml
+# https://github.com/zephyrproject-rtos/zephyr/blob/main/dts/bindings/crypto/silabs%2Csi32-aes.yaml

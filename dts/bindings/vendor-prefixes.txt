@@ -1,0 +1,4 @@
+lowrisc	lowRISC Community Interest Company
+
+
+# https://github.com/zephyrproject-rtos/zephyr/blob/0d65cac7acf79534aa1637274ede4390603a5a02/dts/bindings/vendor-prefixes.txt#L417

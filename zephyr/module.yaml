@@ -1,0 +1,17 @@
+name: opentitan-aes-driver
+# name attribute is options
+# if not: Zephyr build system will automatically fall back to using the name of the folder that contains the module.
+
+build:
+  kconfig: Kconfig
+  cmake: .
+  settings:
+    board_root: .
+    dts_root: .
+
+
+# this is so that the Zephyr build system can pull in the source code from the repository
+# central bridge between an independent, external project and the Zephyr build system
+# same as the one in https://docs.zephyrproject.org/latest/develop/modules.html
+# https://github.com/everedero/zephyr_driver_propyradio/blob/main/zephyr/module.yml
+# https://github.com/zephyrproject-rtos/example-application/blob/main/zephyr/module.yml

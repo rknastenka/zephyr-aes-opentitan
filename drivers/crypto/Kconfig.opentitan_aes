@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Bana Tawalbeh
+# SPDX-License-Identifier: Apache-2.0
+
+config CRYPTO_OPENTITAN_AES
+	bool "OpenTitan AES driver"
+	default y
+	depends on DT_HAS_LOWRISC_OPENTITAN_AES_ENABLED
+	select CRYPTO
+	help
+	  Enable this option to use OpenTitan AES hardware accelerator
+
+
+# https://github.com/zephyrproject-rtos/example-application/blob/main/drivers/blink/Kconfig.gpio_led
+# subsystem - vendor - IP:    CRYPTO_OPENTITAN_AES
