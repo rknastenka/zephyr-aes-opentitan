@@ -10,5 +10,15 @@ config CRYPTO_OPENTITAN_AES
 	  Enable this option to use OpenTitan AES hardware accelerator
 
 
+config CRYPTO_OPENTITAN_MAX_SESSION
+	int "Maximum number of concurrent sessions"
+	default 2
+	help
+	  This determines the number of pre-allocated session structures 
+	  available in RAM.
+
+
+
+
 # https://github.com/zephyrproject-rtos/example-application/blob/main/drivers/blink/Kconfig.gpio_led
 # subsystem - vendor - IP:    CRYPTO_OPENTITAN_AES

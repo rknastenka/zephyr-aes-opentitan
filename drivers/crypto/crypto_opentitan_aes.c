@@ -65,15 +65,33 @@ The rest of the definitions in aes_regs.h cover advanced features
 that fall outside the standard Zephyr OS Crypto API (<zephyr/crypto.h>). 
 like: Fault-Injection/PRNGs/GCM
 Including them now just adds dead code.
+
 ------------------------------------------------------
 4. Configuration Structure
 
+struct opentitan_aes_config {
+    mm_reg_t base_addr;
+};
 
-structs: config / data
+struct opentitan_aes_session {
+    bool in_use;
+    enum cipher_op dir;         // operation: encrypt/decrypt
+ 
+    uint32_t reg_ctrl_mode;     // mode: ECB/CBC
+    uint32_t reg_ctrl_key_len;  // key length: 128/192/256
+    
+    uint32_t key_words[8];      // register to store the key (8 words * 4 bytes = 32 bytes (256-bit max key))  
+};
 
-struct opentitan_aes_config (ROM: Base address).
-struct opentitan_aes_data (RAM)
+// #define OPENTITAN_AES_MAX_SESSIONS 2
 
+struct opentitan_aes_data {
+    struct k_mutex device_mutex; // Prevents concurrent aes access
+    
+    // A pool of sessions assigned to different Zephyr threads
+    // struct opentitan_aes_session sessions[OPENTITAN_AES_MAX_SESSIONS];
+    struct opentitan_aes_session sessions[CONFIG_CRYPTO_OPENTITAN_MAX_SESSION];
+};
 
 ------------------------------------------------------
 5. Initialization and Reset
