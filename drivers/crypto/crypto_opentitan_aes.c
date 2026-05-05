@@ -1,32 +1,32 @@
-------------------------------------------------------
-1. Device Tree Compatibility
+// ------------------------------------------------------
+// 1. Device Tree Compatibility
+// ------------------------------------------------------
 
 #define DT_DRV_COMPAT lowrisc_opentitan_aes
 
-------------------------------------------------------
-2. Header Includes
+// ------------------------------------------------------
+// 2. Header Includes
+// ------------------------------------------------------
 
 #include <stdint.h>                 // For fixed-width integer types (uint32_t)
 #include <errno.h>                  // For error codes (-EINVAL, -ENOTSUP) returned by Zephyr APIs.
 #include <string.h>                 // For memset() and memcpy() used in buffer and key manipulations.
 
 #include <zephyr/kernel.h>          // the k_mutex used in our data struct for thread safety.
+#include <zephyr/irq.h>             // For irq_lock() / irq_unlock()
 #include <zephyr/device.h>          // DEVICE_DT_INST_DEFINE macro to register the driver instance with the OS.
 #include <zephyr/devicetree.h>      // For parsing the .dts files (e.g., DT_INST_REG_ADDR) to get hardware memory addresses.
-
 #include <zephyr/sys/sys_io.h>      // For sys_read32() and sys_write32() to read/write to the memory-mapped registers.
 #include <zephyr/sys/byteorder.h>   // To handle endianness when loading keys/data into the AES block.
-
 #include <zephyr/crypto/crypto.h>   // (crypto_session, crypto_pkt).
 #include <zephyr/crypto/cipher.h>   // (CRYPTO_CIPHER_MODE_CBC, CRYPTO_CIPHER_ALGO_AES).
-
 #include <zephyr/logging/log.h>      // For the LOG_ERR(), LOG_INF(): Debugging
+
 LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 
-#include "aes_regs.h"            // just in case
-
-------------------------------------------------------
-3. Register Offsets and Bitmasks (macro)
+// ------------------------------------------------------
+// 3. Register Offsets and Bitmasks (macro)
+// ------------------------------------------------------
 
 // Base Offsets for Registers (Keys, IV, Data)
 #define AES_KEY_SHARE0_0_REG_OFFSET 0x4
@@ -61,13 +61,14 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 #define AES_STATUS_OUTPUT_VALID_BIT 3
 #define AES_STATUS_INPUT_READY_BIT 4
 
-The rest of the definitions in aes_regs.h cover advanced features 
-that fall outside the standard Zephyr OS Crypto API (<zephyr/crypto.h>). 
-like: Fault-Injection/PRNGs/GCM
-Including them now just adds dead code.
+// The rest of the definitions in aes_regs.h cover advanced features 
+// that fall outside the standard Zephyr OS Crypto API (<zephyr/crypto.h>). 
+// like: Fault-Injection/PRNGs/GCM
+// Including them now just adds dead code.
 
-------------------------------------------------------
-4. Configuration Structure
+// ------------------------------------------------------
+// 4. Configuration Structure
+// ------------------------------------------------------
 
 struct opentitan_aes_config {
     mm_reg_t base_addr;
@@ -75,6 +76,7 @@ struct opentitan_aes_config {
 
 struct opentitan_aes_session {
     bool in_use;
+    const struct device *dev;   // Added so we can retrieve 'dev' inside the processing loop
     enum cipher_op dir;         // operation: encrypt/decrypt (CRYPTO_CIPHER_OP_DECRYPT/CRYPTO_CIPHER_OP_ENCRYPT)
 // in zephyr APIs, 1=enc, 2=dec.
 // which is the same as in the opentitan CTRL Reg space for (0x1 for enc, 0x2 for dec)
@@ -102,7 +104,7 @@ struct opentitan_aes_session {
 // Mutex and Semaphore for Thread Safety and Synchronization 
 // prevent race conditions when multiple threads access the same AES hardware
 struct opentitan_aes_data {
-    struct k_mutex device_mutex;  // Prevents concurrent aes access
+    struct k_mutex lock;  // Prevents concurrent aes access across threads
     // struct k_sem aes_done;     // A Semaphore to signal when hardware is done (interrupt)
     // However, since we are doing polling in this driver, we don't need the semaphore
     // it's a design choice by opentitan AES, it doesn't have an interrupt line to signal when the operation is done,
@@ -124,34 +126,39 @@ static int opentitan_aes_init(const struct device *dev) {
     return 0;
 }
 
-------------------------------------------------------
-6. Read and Write Function
+// ------------------------------------------------------
+// 6. Read and Write Function
+// ------------------------------------------------------
 
 static void aes_write_block
 static void aes_read_block
 static void aes_process_block
 
 
-------------------------------------------------------
-7. AES Modes
+// ------------------------------------------------------
+// 7. AES Modes
+// ------------------------------------------------------
 
 static int opentitan_aes_ecb_op
 static int opentitan_aes_cbc_op
 
-------------------------------------------------------
-8. Session Management
+// ------------------------------------------------------
+// 8. Session Management
+// ------------------------------------------------------
 
 which aes mode was chosen
 
 
-------------------------------------------------------
-9. Zephyr Kernal threading functions 
+// ------------------------------------------------------
+// 9. Zephyr Kernal threading functions 
+// ------------------------------------------------------
 
 Thread Safety Hooks / Locks / Polling Hooks
 
 
-------------------------------------------------------
-10. Hooking up the API
+// ------------------------------------------------------
+// 10. Hooking up the API
+// ------------------------------------------------------
 
 static DEVICE_API( ) = {
 
