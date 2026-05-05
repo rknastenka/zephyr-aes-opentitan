@@ -1,0 +1,8 @@
+/build
+/tests
+drivers/crypto/crypto_bflb_sec_eng_aes.c
+drivers/crypto/crypto_mchp_aes_g1.c
+drivers/crypto/crypto_mspm0_aes.c
+drivers/crypto/crypto_opentitan_aes00.c
+drivers/crypto/crypto_uart.c
+drivers/crypto/crypto.c
