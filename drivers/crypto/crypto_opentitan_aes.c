@@ -96,8 +96,8 @@ struct opentitan_aes_session {
 // to the opentitan hardware values every time we set up the control register for an operation, 
 // which adds unnecessary complexity and overhead
 // which we have to okay use enum but then shift the valuse to the 2-7 bits space each time the computert encrypts/decrypts a block.
-    uint32_t reg_ctrl_key_len;  // key length: 128/192/256
-    
+    uint32_t reg_ctrl_key_len;  // key length: 128/256 -- pre-shifted to bits [11:8] of CTRL
+    uint32_t key_words_count;   // 4 = AES-128, 8 = AES-256 
     uint32_t key_words[8];      // register to store the key (8 words * 32bits = 256-bit max key)  
 };
 
