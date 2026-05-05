@@ -47,7 +47,7 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 
 #define AES_CTRL_SHADOWED_KEY_LEN_OFFSET 8
 #define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_128 0x1
-#define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256 0x4
+#define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256 0x4 // will not support AES-192 in v1, 128 and 256 are enough for now, 192-bit keys are not commonly used in practice.
 
 #define AES_CTRL_SHADOWED_MANUAL_OPERATION_BIT 15
 
@@ -223,13 +223,101 @@ static int opentitan_aes_init(const struct device *dev)
     return 0;
 }
 
+
 // ------------------------------------------------------
-// 6. Read and Write Function
+// 6. Read and Write Functions & Helpers
 // ------------------------------------------------------
 
-static void aes_write_block
-static void aes_read_block
-static void aes_process_block
+ // final key is done by XORing SHARE0 and SHARE1
+ // effective_key = SHARE0 XOR SHARE1
+    static void aes_write_key(mm_reg_t base,
+                             const uint32_t *key_words,  // word=32bits // AES-128 gives 4 words, AES-256 gives 8
+                             uint32_t key_word_count)    // How many of those words above are real key material (4 or 8), rest is padding
+    {
+        // share0-share7
+        for (int i = 0; i < 8; i++) {                                             // The loop always runs 8 times, all 8 register slots must be written
+            uint32_t share0_word = (i < (int)key_word_count) ? key_words[i] : 0u; // if i is less than the actual key word count, write the real key word; otherwise write zero for padding
+            sys_write32(share0_word, base + AES_KEY_SHARE0_0_REG_OFFSET + i * 4); // jump 4bytes to go to the next SHARE0_i register
+        }
+
+        // SHARE1 is always zero in v1 (no side-channel masking).
+        // If we later add support for masked keys, this loop can be modified to write the actual share1 words instead of zeros.
+        for (int i = 0; i < 8; i++) {
+            sys_write32(0u, base + AES_KEY_SHARE1_0_REG_OFFSET + i * 4);
+        }
+    }
+
+
+static void aes_write_iv(mm_reg_t base, 
+                        const uint32_t *iv_words) //IV is always 128 bits, so it's always 4 words(IV_0..IV_3), no need for a word count parameter
+{
+    for (int i = 0; i < 4; i++) {
+        sys_write32(iv_words[i], base + AES_IV_0_REG_OFFSET + i * 4); // IV_0..IV_3
+    }
+}
+/*
+ * Called only for CBC mode; ECB has no IV. 
+ *
+ * After each CBC block the hardware automatically updates IV_0..IV_3
+ * to the last ciphertext block, so software does NOT need to re-write
+ * the IV between blocks of the same message — only for a new message.
+ *
+ *   IV source on decryption:
+ *   AES-CBC decryption requires the *original* IV for the first block.
+ *   The Zephyr API passes ctx->mode_params.cbc_info.iv for this.
+ *   Make sure cbc_op() passes the user-supplied IV here and NOT a
+ *   stale value from a previous encrypt call stored in the session.
+ */
+
+
+static void aes_write_block(mm_reg_t base,
+                            const uint8_t *src) // Pointer to the 16-byte input block 
+// src is uint8_t, not uint32_t like the key and IV. 
+// That's because the Zephyr crypto API gives you a raw byte buffer (pkt->in_buf), 
+// not a pre-chunked word array. 
+{
+    for (int i = 0; i < 4; i++) {
+        uint32_t word = sys_get_le32(src + i * 4);
+        sys_write32(word, base + AES_DATA_IN_0_REG_OFFSET + i * 4);
+    }
+}
+
+//  * Why sys_get_le32() instead of a cast to uint32_t *?
+// It reads 4 bytes starting at src + i*4 and assembles them into a uint32_t in little-endian order. It solves two problems at once:
+/*
+  Problem 1 — Alignment. pkt->in_buf is a uint8_t *. 
+  If you tried to cast it directly to uint32_t * and read it,
+  you might crash on hardware that requires 4-byte aligned reads. 
+  sys_get_le32 reads byte-by-byte internally so alignment doesn't matter.
+*/
+/*
+Problem 2 — Endianness. The AES DATA_IN registers expect little-endian words. 
+sys_get_le32 guarantees that byte 0 of your input ends up in bits 0–7 of the word, 
+byte 1 in bits 8–15, and so on. regardless of whether the CPU is big or little endian.
+*/
+
+
+
+
+static void aes_read_block(mm_reg_t base, uint8_t *dst)
+{
+    for (int i = 0; i < 4; i++) {
+        uint32_t word = sys_read32(base + AES_DATA_OUT_0_REG_OFFSET + i * 4);
+        sys_put_le32(word, dst + i * 4);
+    }
+}
+/*
+ * The caller must have already verified OUTPUT_VALID=1.  Reading all
+ * four DATA_OUT registers is mandatory — the hardware will not start
+ * processing the next block until every output word has been consumed.
+ * (This is the hardware's "do not overwrite un-read output" interlock.)
+ *
+ * We use sys_put_le32() as the symmetric inverse of sys_get_le32() in
+ * aes_write_block().  The DATA_OUT registers are little-endian, so
+ * sys_put_le32() writes bytes in the correct order to dst regardless of
+ * the host CPU's endianness.
+ *
+ */
 
 
 // ------------------------------------------------------
