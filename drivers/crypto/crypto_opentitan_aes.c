@@ -75,12 +75,26 @@ struct opentitan_aes_config {
 
 struct opentitan_aes_session {
     bool in_use;
-    enum cipher_op dir;         // operation: encrypt/decrypt
- 
-    uint32_t reg_ctrl_mode;     // mode: ECB/CBC
+    enum cipher_op dir;         // operation: encrypt/decrypt (CRYPTO_CIPHER_OP_DECRYPT/CRYPTO_CIPHER_OP_ENCRYPT)
+// in zephyr APIs, 1=enc, 2=dec.
+// which is the same as in the opentitan CTRL Reg space for (0x1 for enc, 0x2 for dec)
+// placed in bit 0 and bit 1 so we don't need to do any mapping or shifting
+// that's why we can use the cipher_op (zephyr API) enum 
+// directly in the session struct, instead of defining our own enum for enc/dec.
+
+
+// on the contrast here, zephyer API defines the cipher modes as bitmasks (1 for ECB, 2 for CBC),
+// but in the opentitan hardware, the mode (ECB/CBC) is not a bitmask, 
+// but rather a value that sits in bits 2-7 of the control register
+// that is why we can't use the zephyr API enum for cipher modes directly in the session struct,
+// and instead we need to define our own enum or just use a uint32_t for the mode
+// if we wrote: enum cipher_mode mode here, we would have to do a mapping from the zephyr API enum values (1 for ECB, 2 for CBC)
+// to the opentitan hardware values every time we set up the control register for an operation, 
+// which adds unnecessary complexity and overhead
+// which we have to okay use enum but then shift the valuse to the 2-7 bits space each time the computert encrypts/decrypts a block.
     uint32_t reg_ctrl_key_len;  // key length: 128/192/256
     
-    uint32_t key_words[8];      // register to store the key (8 words * 4 bytes = 32 bytes (256-bit max key))  
+    uint32_t key_words[8];      // register to store the key (8 words * 32bits = 256-bit max key)  
 };
 
 // #define OPENTITAN_AES_MAX_SESSIONS 2
