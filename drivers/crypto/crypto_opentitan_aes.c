@@ -99,8 +99,15 @@ struct opentitan_aes_session {
 
 // #define OPENTITAN_AES_MAX_SESSIONS 2
 
+// Mutex and Semaphore for Thread Safety and Synchronization 
+// prevent race conditions when multiple threads access the same AES hardware
 struct opentitan_aes_data {
-    struct k_mutex device_mutex; // Prevents concurrent aes access
+    struct k_mutex device_mutex;  // Prevents concurrent aes access
+    // struct k_sem aes_done;     // A Semaphore to signal when hardware is done (interrupt)
+    // However, since we are doing polling in this driver, we don't need the semaphore
+    // it's a design choice by opentitan AES, it doesn't have an interrupt line to signal when the operation is done,
+    // so we have to poll the status register to check when the operation is complete.
+    // but we still need the mutex to prevent multiple threads from accessing the hardware at the same
     
     // A pool of sessions assigned to different Zephyr threads
     // struct opentitan_aes_session sessions[OPENTITAN_AES_MAX_SESSIONS];
