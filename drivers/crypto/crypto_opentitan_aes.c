@@ -54,6 +54,8 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 // Trigger Register
 #define AES_TRIGGER_REG_OFFSET 0x80
 #define AES_TRIGGER_START_BIT 0
+#define AES_TRIGGER_KEY_IV_DATA_IN_CLEAR_BIT    1
+#define AES_TRIGGER_DATA_OUT_CLEAR_BIT          2
 
 // Status Register
 #define AES_STATUS_REG_OFFSET 0x84
@@ -116,13 +118,108 @@ struct opentitan_aes_data {
     struct opentitan_aes_session sessions[CONFIG_CRYPTO_OPENTITAN_MAX_SESSION];
 };
 
-------------------------------------------------------
-5. Initialization and Reset
+// ------------------------------------------------------
+// 5. Initialization and Reset
+// ------------------------------------------------------
 
-static int opentitan_aes_init(const struct device *dev) {
-    // 1. Check if the device is ready
-    // 2. Perform a hardware reset if necessary
-    // 3. Initialize any OS locks (Mutex/Semaphores)
+#define AES_TIMEOUT_US                      10000  // 10ms timeout for hardware to respond
+
+
+/*
+ * Hardware-level flush.
+ * Clears keys, IVs, and data registers and returns hardware to IDLE.
+ *
+ * Called at boot and during session teardown to prevent key leakage.
+ */
+static int opentitan_aes_hw_flush(mm_reg_t base)
+{
+    uint32_t timeout = 0;
+
+
+/* explainging the WHILE loop:                         */
+//    Keep reading the STATUS register.
+//   Check if bit 0 is 1 (hardware idle).
+//   If yes → stop waiting, get out of the loop.
+//   If no  → wait 10 microseconds, try again.
+//   If we've tried 1000 times → give up, return an error.
+
+
+    // Wait for IDLE before touching Control Register
+    // Writes to Control Register are silently ignored if hardware is not idle
+    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1 << AES_STATUS_IDLE_BIT))) {
+        if (timeout++ > (AES_TIMEOUT_US / 10)) {
+            return -ETIMEDOUT;
+        }
+        k_busy_wait(10);
+    }
+    timeout = 0;
+
+    // Set MANUAL_OPERATION=1 to disable autostart the enc/dec
+    // (noted in opentitan AES HW docs to be required for a successful flush)
+    // Double-write required for all shadowed registers
+    uint32_t ctrl_val = (1u << AES_CTRL_SHADOWED_MANUAL_OPERATION_BIT); // 1 << 15
+    sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+    sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+    // we will set the MANUAL_OPERATION back to zero in the begin_session()
+    // because we want the autostart feature for normal encryption/decryption operations
+    // we only need to disable it for the flush operation at boot and during session teardown.
+
+
+    // Re-poll IDLE bcz control register write may trigger an internal PRNG reseed
+    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1 << AES_STATUS_IDLE_BIT))) {
+        if (timeout++ > (AES_TIMEOUT_US / 10)) {
+            return -ETIMEDOUT;
+        }
+        k_busy_wait(10);
+    }
+    timeout = 0;
+
+
+    // Trigger hardware clear of keys, IVs, and all data registers
+    sys_write32((1 << AES_TRIGGER_KEY_IV_DATA_IN_CLEAR_BIT) |
+                (1 << AES_TRIGGER_DATA_OUT_CLEAR_BIT),
+                base + AES_TRIGGER_REG_OFFSET);
+
+     
+                
+    // Wait for IDLE after clear completes
+    // The hardware clear takes several clock cycles to overwrite all registers with PRNG-generated data.
+    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1 << AES_STATUS_IDLE_BIT))) {
+        if (timeout++ > (AES_TIMEOUT_US / 10)) {
+            return -ETIMEDOUT;
+        }
+        k_busy_wait(10);
+    }
+
+
+    return 0;
+}
+
+
+/*
+ * Zephyr device initialization callback
+ */
+static int opentitan_aes_init(const struct device *dev)
+{
+    struct opentitan_aes_data *data = dev->data;
+    const struct opentitan_aes_config *cfg = dev->config;
+
+    k_mutex_init(&data->lock);
+
+    // Clear all software session slots
+    for (int i = 0; i < CONFIG_CRYPTO_OPENTITAN_MAX_SESSION; i++) {
+        data->sessions[i].in_use = false;
+        memset(data->sessions[i].key_words, 0, sizeof(data->sessions[i].key_words));
+    }
+
+    // Flush hardware state at boot
+    int ret = opentitan_aes_hw_flush(cfg->base_addr);
+    if (ret != 0) {
+        LOG_ERR("OpenTitan AES hardware flush failed (timed out)");
+        return ret;
+    }
+
+    LOG_INF("OpenTitan AES driver initialized.");
     return 0;
 }
 
