@@ -494,10 +494,23 @@ which aes mode was chosen
 
 
 // ------------------------------------------------------
-// 9. Zephyr Kernal threading functions 
+// 9. Hardware Capability Query
 // ------------------------------------------------------
 
-Thread Safety Hooks / Locks / Polling Hooks
+#define OPENTITAN_AES_HW_CAPS (CAP_RAW_KEY | CAP_SEPARATE_IO_BUFS | CAP_SYNC_OPS)
+// REF: https://github.com/zephyrproject-rtos/zephyr/blob/9a51ed649e8a9dfc6c15b802f9d6c7236450f0b5/include/zephyr/crypto/crypto.h#L175-L192
+
+// CAP_RAW_KEY - I load raw bytes directly
+// CAP_SEPARATE_IO_BUFS - Separate buffers, ecb_op() reads from pkt->in_buf and writes to pkt->out_buf
+// CAP_SYNC_OPS - *Polling* blocks until done
+
+
+static int opentitan_aes_query_hw_caps(const struct device *dev)
+{
+    ARG_UNUSED(dev);
+    return OPENTITAN_AES_HW_CAPS;
+}
+
 
 
 // ------------------------------------------------------
