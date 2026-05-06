@@ -122,6 +122,20 @@ struct opentitan_aes_data {
 // 5. Initialization and Reset
 // ------------------------------------------------------
 
+// Replace all the polling function with one helper in v2
+// static int poll_idle(mm_reg_t base)
+// {
+//     uint32_t t = 0;
+//     while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
+//         if (t++ > (AES_TIMEOUT_US / 10)) {
+//             return -ETIMEDOUT;
+//         }
+//         k_busy_wait(10);
+//     }
+//     return 0;
+// }
+
+
 #define AES_TIMEOUT_US                      10000  // 10ms timeout for hardware to respond
 
 
@@ -247,7 +261,7 @@ static int opentitan_aes_init(const struct device *dev)
         }
     }
 
-
+// this will be used in v2
 static void aes_write_iv(mm_reg_t base, 
                         const uint32_t *iv_words) //IV is always 128 bits, so it's always 4 words(IV_0..IV_3), no need for a word count parameter
 {
@@ -626,7 +640,6 @@ static int opentitan_aes_begin_session(const struct device *dev,
         cipher_op_t ctr_crypt_hndlr;     // CTR
     };
     */
-};
 
     ctx->drv_sessn_state = sess; // this is how we link the session state to the ctx, so that the ecb_op() can retrieve it later when it needs to access the session info like the key and direction.
     // REF: https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html#a624cf985cf35b3aa8681c3892fd67429
@@ -679,7 +692,7 @@ static int opentitan_aes_free_session(const struct device *dev, struct cipher_ct
  * Without this flush, a subsequent session could potentially observe residual key state via timing side-channels.
  * See: https://github.com/lowRISC/opentitan/issues/2382
  */
-    opentitan_aes_hw_flush(cfg->base_addr);  // Hardware Flush! flushes the SRAM registers
+    opentitan_aes_hw_flush(cfg->base_addr);  // Scrubs KEY_SHARE0/SHARE1 hardware registers -- memset above only clears SRAM.
 
 
     // After zeroing the session struct, we can safely release the mutex, allowing other threads to claim this now-free session slot or free other slots.
@@ -746,8 +759,6 @@ opentitan_aes_api     ────────── struct device .api      (st
 // for openTitan SoC they have only one AES block so n=0 always
 // but if same aes was used on another SoC, that's where we need the n to create multiple instances of the driver for each AES block.
 
-
-DT_INST_FOREACH_STATUS_OKAY(OPENTITAN_AES_INIT)
 
 #define OPENTITAN_AES_INIT(n)                                              \
                                                                            \
