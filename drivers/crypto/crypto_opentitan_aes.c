@@ -510,9 +510,49 @@ static DEVICE_API( ) = {
 
 
 ------------------------------------------------------
-11. Device Instantiation 
+// 11. Device Instantiation 
+// ------------------------------------------------------
 
-#define OPENTITAN_AES_INIT(n).....
+// It just saying there's an AES block in your SoC, and its base address is whatever the Devicetree says it is.
+// for openTitan SoC they have only one AES block so n=0 always
+// but if same aes was used on another SoC, that's where we need the n to create multiple instances of the driver for each AES block.
 
 
 DT_INST_FOREACH_STATUS_OKAY(OPENTITAN_AES_INIT)
+
+#define OPENTITAN_AES_INIT(n)                                              \
+                                                                           \
+    static const struct opentitan_aes_config opentitan_aes_cfg_##n = {    \
+        .base_addr = DT_INST_REG_ADDR(n),                                  \
+    };                                                                     \
+                                                                           \
+    static struct opentitan_aes_data opentitan_aes_data_##n = {           \
+        .lock = Z_MUTEX_INITIALIZER(opentitan_aes_data_##n.lock),         \
+    };                                                                     \
+                                                                           \
+    DEVICE_DT_INST_DEFINE(n,                                               \
+        opentitan_aes_init,                                                \
+        NULL,                                                              \
+        &opentitan_aes_data_##n,                                           \
+        &opentitan_aes_cfg_##n,                                            \
+        POST_KERNEL,                                                       \
+        CONFIG_CRYPTO_INIT_PRIORITY,                                       \
+        &opentitan_aes_api);
+
+DT_INST_FOREACH_STATUS_OKAY(OPENTITAN_AES_INIT)   // Find every "lowrisc,opentitan-aes" in the Devicetree and run the macro above
+
+
+/*
+DEVICE_DT_INST_DEFINE(
+    n,                          // instance number - names the device object
+    opentitan_aes_init,         // function to call at boot (section 5)
+    NULL,                       // no power management in v1
+    &opentitan_aes_data_##n,    // pointer to the mutable data struct
+    &opentitan_aes_cfg_##n,     // pointer to the const config struct
+    POST_KERNEL,                // init level: kernel is up, but app not yet
+    CONFIG_CRYPTO_INIT_PRIORITY,// numeric priority within POST_KERNEL // lower number drvier runs first
+    &opentitan_aes_api          // pointer to our crypto_driver_api (section 10)
+);
+*/
+
+// post kernal: means after hte kernal is up, but before the application starts.
