@@ -504,12 +504,22 @@ Thread Safety Hooks / Locks / Polling Hooks
 // 10. Hooking up the API
 // ------------------------------------------------------
 
-static DEVICE_API( ) = {
-
+// The Zephyr crypto_driver_api struct ties our functions to the generic crypto API layer.
+static DEVICE_API(crypto, opentitan_aes_api) = {
+    .query_hw_caps             = opentitan_aes_query_hw_caps,
+    .cipher_begin_session      = opentitan_aes_begin_session,
+    .cipher_free_session       = opentitan_aes_free_session,
 };
 
+/*
+my structs:                       Zephyr device kernal structs:                              
+opentitan_aes_config  ────────── struct device .config   (step11)
+opentitan_aes_data    ────────── struct device .data     (step11)
+opentitan_aes_api     ────────── struct device .api      (step10) 
+*/
 
-------------------------------------------------------
+
+// ------------------------------------------------------
 // 11. Device Instantiation 
 // ------------------------------------------------------
 
