@@ -321,11 +321,170 @@ static void aes_read_block(mm_reg_t base, uint8_t *dst)
 
 
 // ------------------------------------------------------
-// 7. AES Modes
+// 7. AES Modes - ECB only for v1, CBC in v2
 // ------------------------------------------------------
 
-static int opentitan_aes_ecb_op
-static int opentitan_aes_cbc_op
+// static int opentitan_aes_ecb_op
+// static int opentitan_aes_cbc_op
+
+
+/*
+ * loop until STATUS.INPUT_READY (bit 4) is set, meaning the hardware
+ * has consumed the previous DATA_IN write and is ready for a new block.
+ *
+ * Returns 0 on success, -ETIMEDOUT if the hardware does not respond
+ * within AES_TIMEOUT_US microseconds.
+ */
+static int poll_input_ready(mm_reg_t base)
+{
+	uint32_t t = 0;
+
+	while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_INPUT_READY_BIT))) {
+		if (t++ > (AES_TIMEOUT_US / 10)) {
+			return -ETIMEDOUT;
+		}
+		k_busy_wait(10);
+	}
+	return 0;
+}
+
+
+/*
+ * loop until STATUS.OUTPUT_VALID (bit 3) is set, meaning the hardware
+ * has finished processing a block and the result is ready in DATA_OUT.
+ *
+ * Returns 0 on success, -ETIMEDOUT if the hardware does not respond
+ * within AES_TIMEOUT_US microseconds.
+ */
+static int poll_output_valid(mm_reg_t base)
+{
+	uint32_t t = 0;
+
+	while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_OUTPUT_VALID_BIT))) {
+		if (t++ > (AES_TIMEOUT_US / 10)) {
+			return -ETIMEDOUT;
+		}
+		k_busy_wait(10);
+	}
+	return 0;
+}
+
+
+// ECB mode:
+// Process the input data in 16-byte blocks
+// writing each block to the AES_DATA_IN registers
+// and reading the result from AES_DATA_OUT after each block is processed.
+static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) // these are zephyr API structs
+//                                                                              // cipher_ctx has the session pointer and mode 
+{                                                                               // cipher_pkt has the input and output buffers and lengths
+//                                                                              // REF: https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html
+	const struct opentitan_aes_session *sess = (const struct opentitan_aes_session *)ctx->drv_sessn_state; //sess is a pointer to a pointer to know this exact session state(dir, key, key_len)
+	const struct opentitan_aes_config *cfg =   (const struct opentitan_aes_config *)sess->dev->config;
+	mm_reg_t base = cfg->base_addr;
+	
+    uint32_t t = 0;
+
+	 // ECB has no padding in v1 - caller must supply one or more complete 16-byte blocks.
+	if (pkt->in_len == 0 || (pkt->in_len % 16) != 0) { // in_len: Number of input **bytes** to process. // it must be non zero and a multiple of 16 
+		return -EINVAL;//Invalid Argument              
+	}
+
+	uint32_t num_blocks = pkt->in_len / 16; // number of 16-byte(128bits) blocks to process, used for loop control below
+
+
+	// We set up the control register once at the start of the operation, and the hardware remains configured for the entire message.
+    // The OPERATION, MODE, and KEY_LEN
+    uint32_t ctrl_val =
+                ((uint32_t)sess->dir << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
+                (AES_CTRL_SHADOWED_MODE_VALUE_AES_ECB << AES_CTRL_SHADOWED_MODE_OFFSET) | // MODE
+                sess->reg_ctrl_key_len; // pre-shifted to bits [11:8] by begin_session    // KEY_LEN
+
+    /*
+	 * Bit layout:
+	 *   [1:0]  OPERATION  — (uint32_t)sess->dir : (1=enc, 2=dec; matches hardware directly)
+	 *   [7:2]  MODE       — AES_ECB shifted to bits [7:2]
+	 *   [11:8] KEY_LEN    — sess->reg_ctrl_key_len (pre-shifted by begin_session)
+	 *   [15]   MANUAL_OP  — 0 (autostart enabled)
+	 */
+
+	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET); // shadowed
+
+
+	 // Wait for IDLE after writing CTRL.
+	 // A CTRL write may trigger an internal PRNG reseed.
+     // Key writes issued before IDLE is set are silently ignored.
+	while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
+		if (t++ > (AES_TIMEOUT_US / 10)) {
+			return -ETIMEDOUT;
+		}
+		k_busy_wait(10);
+	}
+/*
+* Opentitan Reference: Since writing this register may initiate the reseeding of the internal PRNGs,
+*                     software must check that the AES unit is idle before providing the initial key.
+*/
+
+    // Write the key after confirming the hardware is ready to accept it.
+	aes_write_key(base, sess->key_words, sess->key_words_count); // block 0 - outside the loop
+
+    // check INPUT_READY reg before writing the first block
+    int ret = poll_input_ready(base);
+	if (ret) {
+		return ret;
+	}
+
+
+    // WRITE THE FIRST BLOCK TO START THE ENCRYPTION/DECRYPTION
+	aes_write_block(base, pkt->in_buf); /* block 0 — hardware auto-starts */
+// this is the first block, we write it before the loop, 
+// because after writing the first block, 
+// the hardware starts processing and 
+// we can start ***polling for the output of the first block while writing the second block****, 
+// which is more efficient than waiting for the first block to finish before writing the second block.
+
+
+ // How the pipline works in ECB mode:
+
+// in every iteration:
+// READ *block0* --- WRITE *blcok1*
+// READ *block1* --- WRITE *block2*
+
+// REF OpenTitan: "While the AES unit is performing encryption/decryption, the processor can safely write the next input data block into the CSRs."
+
+	for (uint32_t i = 0; i < num_blocks; i++) {
+
+		// Wait for block i to complete the encryption/decryption and the result to be ready in DATA_OUT before reading it.
+		ret = poll_output_valid(base);
+		if (ret) {
+			return ret;
+		}
+
+		
+        // READ THE ENCRYPTED/DECRYPTED block
+		aes_read_block(base, pkt->out_buf + i * 16);     // Read all *four* DATA_OUT words(16bytes), must to release interlock so it can accept the next block.
+
+        // SEND A NEW BLOCK TO BE ENCRYPTED/DECRYPTED
+		if (i < num_blocks - 1) {
+			aes_write_block(base, pkt->in_buf + (i + 1) * 16); // this means read the first 
+            // in_buf is just a (1byte) pointer, it points to the first byte of the input message, and we are treating it as an array of bytes.
+		}
+        // we write the next input block direclty after reading the output: No poll_input_ready() needed -- note down below.
+
+	}
+    // out_buf: [ encrypted block 0 ][ encrypted block 1 ] ...
+
+	return 0;
+}
+/*
+ * Note: OpenTitan programmer's guide: INPUT_READY is guaranteed to be 1
+ * when OUTPUT_VALID is 1. After  poll_output_valid() + aes_read_block(),
+ * the next aes_write_block() needs no extra poll_input_ready() call
+
+there's indeed a one cycle gap here, but we're writing software, we don't care much about it
+*/
+
+
 
 // ------------------------------------------------------
 // 8. Session Management
