@@ -354,6 +354,11 @@ static int mchp_aes_query_caps(const struct device *dev)
 	return MCHP_AES_CAPS_SUPPORT;
 }
 
+
+
+
+
+
 static int crypto_mchp_aes_init(const struct device *dev)
 {
 	const struct device *const pmc = DEVICE_DT_GET(DT_NODELABEL(pmc));

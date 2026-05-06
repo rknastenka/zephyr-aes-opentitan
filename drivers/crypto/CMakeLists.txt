@@ -2,6 +2,6 @@
 
 
 zephyr_library()
-zephyr_library_sources_ifdef(CONFIG_OPENTITAN_AES_DRIVER crypto_opentitan_aes.c)
+zephyr_library_sources_ifdef(CONFIG_CRYPTO_OPENTITAN_AES crypto_opentitan_aes.c)
 
 # https://github.com/zephyrproject-rtos/example-application/blob/main/drivers/blink/CMakeLists.txt

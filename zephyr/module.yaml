@@ -3,7 +3,7 @@ name: opentitan-aes-driver
 # if not: Zephyr build system will automatically fall back to using the name of the folder that contains the module.
 
 build:
-  kconfig: Kconfig
+  kconfig: drivers/crypto/Kconfig
   cmake: .
   settings:
     board_root: .

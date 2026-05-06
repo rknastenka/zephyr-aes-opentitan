@@ -421,6 +421,14 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 	 *   [15]   MANUAL_OP  — 0 (autostart enabled)
 	 */
 
+
+    // Wait for IDLE before touching Control Register
+    // Writes to Control Register are silently ignored if hardware is not idle
+    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
+        if (t++ > (AES_TIMEOUT_US / 10)) { return -ETIMEDOUT; }
+        k_busy_wait(10);
+    }
+
 	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
 	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET); // shadowed
 
@@ -617,6 +625,13 @@ static int opentitan_aes_begin_session(const struct device *dev,
            ctx->key.bit_stream,
            key_words_count * sizeof(uint32_t)); // AES-128= 4*4= 16bytes
 //                                              // AES-256= 8*4= 32bytes
+
+// Notes:
+// "memcpy" treating the key as raw bytes, then later write them with sys_write32() (native endian).
+// This is correct only if the CPU is little-endian (RISC-V is LE by default).
+// If you ever port to a BE target, you need sys_cpu_to_le32() on each word. 
+// --- Consider using sys_get_le32() here like you do in aes_write_block -----
+
 
     sess->in_use = true; // means the session slot is now claimed and occupied by a session, so other threads can't claim it until it's freed.
 

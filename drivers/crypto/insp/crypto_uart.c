@@ -125,7 +125,8 @@ static DEVICE_API(uart, uart_opentitan_driver_api) = {
 	\
 	DEVICE_DT_INST_DEFINE(n, uart_opentitan_init, NULL, NULL, \
 				&uart_opentitan_config_##n, \
-				PRE_KERNEL_1, CONFIG_SERIAL_INIT_PRIORITY, \
+				PRE_KERNEL_1, \
+				CONFIG_SERIAL_INIT_PRIORITY, \
 				&uart_opentitan_driver_api);
 
                 
