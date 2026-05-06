@@ -375,7 +375,7 @@ static int poll_output_valid(mm_reg_t base)
 // writing each block to the AES_DATA_IN registers
 // and reading the result from AES_DATA_OUT after each block is processed.
 static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) // these are zephyr API structs
-//                                                                              // cipher_ctx has the session pointer and mode 
+//                                                                              // cipher_ctx has the session pointer and mode parameters (like IV pointer for CBC)
 {                                                                               // cipher_pkt has the input and output buffers and lengths
 //                                                                              // REF: https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html
 	const struct opentitan_aes_session *sess = (const struct opentitan_aes_session *)ctx->drv_sessn_state; //sess is a pointer to a pointer to know this exact session state(dir, key, key_len)
@@ -490,7 +490,212 @@ there's indeed a one cycle gap here, but we're writing software, we don't care m
 // 8. Session Management
 // ------------------------------------------------------
 
-which aes mode was chosen
+
+//Mutex timeout for begin_session / free_session.
+#define OPENTITAN_AES_LOCK_TIMEOUT  K_MSEC(100)
+
+/*
+ * ctx->drv_sessn_state is set to the claimed slot so that ecb_op() can
+ * retrieve it as:
+ *   const struct opentitan_aes_session *sess = (const struct opentitan_aes_session *)ctx->drv_sessn_state;
+ 
+ * v1 scope: ECB only.  All other modes return -ENOTSUP immediately.
+ */
+
+ /*
+ * Returns 0 on success, or:
+ *   -ENOTSUP  algo is not AES, or mode is not ECB
+ *   -EINVAL   key length is not 128 or 256 bits, or key pointer is NULL
+ *   -ENOMEM   all CONFIG_CRYPTO_OPENTITAN_MAX_SESSION slots are busy
+ *   -EBUSY    could not acquire the session-pool mutex within the timeout
+ */
+
+ 
+static int opentitan_aes_begin_session(const struct device *dev,
+                                        struct cipher_ctx   *ctx,      // holds the session state + mode parameters (like IV pointer for CBC)
+                                        enum cipher_algo     algo,     // zephyr API enum for algorithm (aes only:  CRYPTO_CIPHER_ALGO_AES)
+                                        enum cipher_mode     mode,     // zephyr API enum for mode (ecb only:  CRYPTO_CIPHER_MODE_ECB)
+                                        enum cipher_op       op_type)  // zephyr API enum for operation type (encrypt/decrypt: CRYPTO_CIPHER_OP_ENCRYPT/CRYPTO_CIPHER_OP_DECRYPT)
+{
+
+    // Only AES is supported
+    if (algo != CRYPTO_CIPHER_ALGO_AES) {  // in case a buggy app tried to call begin_session with a different algorithm, we want to catch it and return a clear error message.
+        LOG_ERR("Unsupported algorithm %d; only AES is supported", algo);
+        return -ENOTSUP;
+    }
+
+    // Only ECB is supported 
+    if (mode != CRYPTO_CIPHER_MODE_ECB) {
+        LOG_ERR("Unsupported mode %d; only ECB is supported in v1", mode);
+        return -ENOTSUP;
+    }
+
+
+    // ctx->key.bit_stream: pointer to the first byte of the key.
+    if (ctx->key.bit_stream == NULL) {
+        LOG_ERR("Key pointer (ctx->key.bit_stream) is NULL"); // in case an app forgot to set ctx.key.bit_stream = his-key
+        return -EINVAL;
+    }
+
+
+    // ctx->keylen is in bytes (Zephyr convention).
+    // Convert to bits for comparison against the hardware-defined key size constants.
+    uint32_t key_len_bits = (uint32_t)ctx->keylen * 8u;
+
+    uint32_t reg_ctrl_key_len;  // we want to shift it to the correct position in the control reg down below
+    uint32_t key_words_count;   // number of 32-bit key words (4 or 8)
+
+    if (key_len_bits == 128u) {
+
+        reg_ctrl_key_len = AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_128 << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;  // 1<<8 = 0x100 (1’b001 shifted to bits [11:8])
+        key_words_count = 4u; //aes_write_key() uses this to decide how many SHARE0 slots receive
+
+    } else if (key_len_bits == 256u) {
+
+        reg_ctrl_key_len = AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256 << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;  // 4<<8 = 0x400 (3’b100 shifted to bits [11:8])
+        key_words_count  = 8u;
+
+    } else {
+        LOG_ERR("Unsupported key length %u bits; only 128 and 256 are supported", key_len_bits);
+        return -EINVAL;
+    }
+
+
+    // Claim a session slot (mutex-protected)
+    struct opentitan_aes_data *data = dev->data; // dev->data->lock
+
+    // This routine locks mutex. If the mutex is locked by another thread, the calling thread waits until the mutex becomes available or until a timeout occurs.
+    int lock_ret = k_mutex_lock(&data->lock, OPENTITAN_AES_LOCK_TIMEOUT); // it will return 0 on success 
+    //REF: https://docs.zephyrproject.org/latest/doxygen/html/group__mutex__apis.html#ga850549358645249c285669baa49c33b0
+
+    if (lock_ret != 0) {
+        LOG_ERR("Could not acquire session-pool mutex (timeout)");
+        return -EBUSY;
+    }
+
+    struct opentitan_aes_session *sess = NULL; // intialize a pointer to the session struct, we will set it to point to the claimed session slot in the pool below
+
+    // look for the unused session slot(free slot) and make sess pointer point to it!
+    for (int i = 0; i < CONFIG_CRYPTO_OPENTITAN_MAX_SESSION; i++) {
+        if (!data->sessions[i].in_use) {
+            sess = &data->sessions[i];
+            break;
+        }
+    }
+
+    // if all session slots are in use, return an error. The app (caller) can then decide to wait and retry, or give up.
+    if (sess == NULL) {
+        k_mutex_unlock(&data->lock); // unlock the mutex before returning, otherwise we would have a deadlock
+        LOG_ERR("No free AES session slots (max = %d)", CONFIG_CRYPTO_OPENTITAN_MAX_SESSION);
+        return -ENOMEM;
+    }
+
+// Now we have created a session!
+// we have to populate this session with the needed info
+    sess->dev  = dev;      // ecb_op() needs dev->config->base_addr  
+    sess->dir  = op_type;  // CRYPTO_CIPHER_OP_ENCRYPT=1, _DECRYPT=2. Matches OpenTitan CTRL-OPERATION field directly — no remapping needed. 
+    sess->reg_ctrl_key_len = reg_ctrl_key_len;  // pre-shifted above for direct use in the control register.
+    sess->key_words_count  = key_words_count;   // 4 or 8;
+
+    // NOw we need to copy the *key* data from the caller's app to our session struct!
+    // memory copy:  memcpy(destination, source, num_bytes); 
+    memcpy(sess->key_words,
+           ctx->key.bit_stream,
+           key_words_count * sizeof(uint32_t)); // AES-128= 4*4= 16bytes
+//                                              // AES-256= 8*4= 32bytes
+
+    sess->in_use = true; // means the session slot is now claimed and occupied by a session, so other threads can't claim it until it's freed.
+
+    // now after we filled all the session info, we unlock (release) the mutex!
+    // so other threads can claim other session slots or free this slot if they want to.
+    k_mutex_unlock(&data->lock);
+
+
+    
+    // The Zephyr crypto calls cipher_block_op(ctx, pkt), which internally does ctx->ops.block_crypt_hndlr(ctx, pkt).
+    // If it is left NULL, every encrypt/decrypt call could silently fail
+    ctx->ops.block_crypt_hndlr = opentitan_aes_ecb_op;
+
+     // v2: for a CBC session this line becomes:
+     // ctx->ops.cbc_crypt_hndlr = opentitan_aes_cbc_op;
+    
+    /*
+    struct cipher_ops { cipher_mode mode; union {
+        cipher_op_t block_crypt_hndlr;   // ECB
+        cipher_op_t cbc_crypt_hndlr;     // CBC
+        cipher_op_t ctr_crypt_hndlr;     // CTR
+    };
+    */
+};
+
+    ctx->drv_sessn_state = sess; // this is how we link the session state to the ctx, so that the ecb_op() can retrieve it later when it needs to access the session info like the key and direction.
+    // REF: https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html#a624cf985cf35b3aa8681c3892fd67429
+
+    LOG_INF("AES session started: mode=ECB dir=%d key=%u bits", op_type, key_len_bits);
+
+    return 0;
+}
+
+
+/*
+ * Tears down a session created by opentitan_aes_begin_session().
+ * Zeroes all key material in the session struct before releasing the slot.
+ *
+ * Returns 0 on success, or:
+ *   -EINVAL   ctx is NULL, or ctx->drv_sessn_state is NULL
+ *   -EBUSY    could not acquire the session-pool mutex within the timeout
+ */
+static int opentitan_aes_free_session(const struct device *dev, struct cipher_ctx   *ctx)
+{
+
+    // NULL ctx   : caller is freeing something never received or already freed (bug in the caller).
+    // NULL sessn : begin_session() never completed; nothing to release.
+    if (ctx == NULL || ctx->drv_sessn_state == NULL) {
+        LOG_ERR("free_session called with NULL ctx or drv_sessn_state");
+        return -EINVAL;
+    }
+
+    struct opentitan_aes_session *sess = (struct opentitan_aes_session *)ctx->drv_sessn_state;
+    struct opentitan_aes_data *data = dev->data;
+    const struct opentitan_aes_config *cfg = dev->config;
+
+
+// We lock the mutex to safely modify the session slot and prevent race conditions with other threads that might be trying to claim or free sessions at the same time.
+    int lock_ret = k_mutex_lock(&data->lock, OPENTITAN_AES_LOCK_TIMEOUT);
+
+    if (lock_ret != 0) {
+        LOG_ERR("Could not acquire session-pool mutex in free_session (timeout)");
+        return -EBUSY;
+    }
+
+    // this memset does a few things at once: 
+    // it sets in_use to false, which marks the session slot as free and available for other threads to claim;
+    // it also zeroes out key_words[], dir, dev. to prevent any potential leakage of sensitive data.
+    memset(sess, 0, sizeof(struct opentitan_aes_session));
+
+/*
+ * Flush hardware key registers.
+ * OpenTitan AES holds key material in KEY_SHARE0/SHARE1 registers until explicitly cleared. 
+ * Without this flush, a subsequent session could potentially observe residual key state via timing side-channels.
+ * See: https://github.com/lowRISC/opentitan/issues/2382
+ */
+    opentitan_aes_hw_flush(cfg->base_addr);  // Hardware Flush! flushes the SRAM registers
+
+
+    // After zeroing the session struct, we can safely release the mutex, allowing other threads to claim this now-free session slot or free other slots.
+    k_mutex_unlock(&data->lock);
+
+
+    // NULL-ing drv_sessn_state after the mutex is released is safe because
+    // ctx is owned by the calling thread (not shared via data->sessions). 
+    // so we need to break the link between the ctx and the session struct
+    // to prevent any accidental access to a freed session in future calls.
+    ctx->drv_sessn_state = NULL;
+
+    LOG_INF("AES session freed");
+
+    return 0;
+}
 
 
 // ------------------------------------------------------
@@ -530,6 +735,7 @@ opentitan_aes_config  ────────── struct device .config   (st
 opentitan_aes_data    ────────── struct device .data     (step11)
 opentitan_aes_api     ────────── struct device .api      (step10) 
 */
+
 
 
 // ------------------------------------------------------
