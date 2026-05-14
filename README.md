@@ -8,13 +8,24 @@ For now the driver only supports ECB mode, will add support for other AES modes 
 ---
 # Learn How To Create Your Own Zephyr Driver
 
-When I first started looking for tutorials on how to write a driver, they all felt really high-level to me. There aren't many tutorials out there, and the ones that exist assume the reader already has a fair amount of background knowledge. So in this one, I tried to briefly explain all the concepts that might be new to you.  
+When I first started looking for tutorials on how to write a driver, they all felt really high-level to me. There aren't many tutorials out there, and the ones that exist assume the reader already has a fair amount of background knowledge. So in this one, I tried to briefly explain all the concepts that might be new to you. This is for anyone who wants to write a Zephyr RTOS driver but doesn't know where to start. You don't need prior driver experience, just basic C knowledge and a general idea of what a microcontroller is.
+
 Hope you enjoy reading! Let me know if there are any mistakes...
+
+
 
 ## Get Familiar With the Concepts First!
 To run software on hardware you need an operating system. For microcontrollers specifically, we typically use a real-time operating system (RTOS), a type of OS that prioritizes determinism, time-sensitive operations, and resource-constrained devices. Just like there are many general-purpose operating systems you already know: Windows, Linux, macOS. There are also many RTOSes, and Zephyr is just one of them. Zephyr is becoming really popular these days for many reasons beyond being fully open source: its modularity, broad board support, and security-first design.
 
+
+> 💡 **What is an RTOS?**   
+> A regular OS like Windows or Linux is designed for comfort, it tries to do many things at once and doesn't guarantee when exactly each task runs. An RTOS is designed for predictability, it guarantees that a task runs within a specific time window. This matters a lot when you're controlling hardware: if your code is supposed to read a sensor every 10ms, a 50ms delay could break everything. Zephyr, FreeRTOS, and ThreadX are all examples of RTOSes.
+
+
 For the OS to work, it must recognize the hardware and know how to communicate with it. The most fundamental way software talks to hardware is through **registers**. Each hardware IP has its own set of control and status registers, sitting at specific offsets from a base address. A **driver** is the piece of software that knows where those registers are, what writing to them does, and what reading them back means. In short: a driver is the bridge between the OS and a physical piece of hardware.
+
+> 💡 **What are registers?**   
+> Registers are small memory locations built directly into the hardware. Writing a specific value to a register tells the hardware to do something (like start an encryption operation). Reading a register tells you the hardware's current state (like whether it's done or idle). Every hardware block has its own set of registers sitting at fixed addresses in memory, this is called memory-mapped I/O.
 
 Some drivers are called **bare-metal** drivers, where software reads and writes directly to physical memory addresses with no abstraction layer. Other drivers, like this one, are written against an **API provided by the OS kernel** (in our case, [Zephyr's `crypto` API](https://docs.zephyrproject.org/latest/services/crypto/api/index.html)). This approach is more work upfront, but it pays off when your driver is part of a larger system: the kernel and other subsystems can interact with your hardware through a standard interface, without needing to know anything about the specific registers underneath.
 
