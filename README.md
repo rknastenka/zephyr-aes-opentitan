@@ -140,12 +140,31 @@ Here's a glimpse of what an AES node in a `.dts` file looks like:
 You don't write this in your driver. The developer or app calling your driver writes it, or more precisely, writes an **overlay** on top of the board's existing `.dts` file.
 As you can see in the [`.overlay`](https://github.com/rknastenka/zephyr-aes-opentitan/blob/main/tests/aes_test_app/app.overlay) file in the test app we implement to test the driver. And if you want to see what a full real-world `.dts` file looks like, here's the [OpenTitan Earl Grey board `.dts`](https://github.com/zephyrproject-rtos/zephyr/blob/main/boards/lowrisc/opentitan_earlgrey/opentitan_earlgrey.dts) from the Zephyr repo, you'll recognize the same structure.
 
-> 💡 What is a Devicetree?
+> 💡 **What is a Devicetree?**
 > A Devicetree (.dts file) is a text file that describes your hardware to the OS, things like what peripherals exist, where they sit in memory, and which driver should handle them. In the snippet above: the **compatible** property tells Zephyr which driver to use, **reg** is the base address and size of the hardware block in memory, and **status** works like an on/off switch, set it to "okay" to enable the block, or "disabled" to ignore it. The aes0 label is just a name with a counter, in case your board has multiple AES blocks, you'd have aes0, aes1...
 > 
 > The reason base addresses live in the devicetree and not in your driver code is simple: **every board places its hardware blocks at different memory addresses**. If you hardcoded 0x41100000 in your driver, it would only work on one specific board. By reading the address from the devicetree at build time, the same driver works everywhere.
 ---
 
+### **Section 2: Header Includes**
+```c
+#include <stdint.h>               
+#include <errno.h>                 
+#include <string.h>                 
+
+#include <zephyr/kernel.h>         
+#include <zephyr/irq.h>             
+#include <zephyr/device.h>    
+...
+..
+.
+```
+Nothing so fancy here, you want to use a library? include it, that's it :)
+For example: `zephyr/device.h` to register the driver, `zephyr/sys/sys_io.h` to read and write registers, `crypto.h` for the crypto API structs, and so on. 
+
+You can browse all available Zephyr headers in the [zephyr/include](https://github.com/zephyrproject-rtos/zephyr/tree/main/include/zephyr) directory, it's a good habit to open the header file itself when you're not sure what a function does, the comments in there are usually pretty good.
+
+---
 
 
 
