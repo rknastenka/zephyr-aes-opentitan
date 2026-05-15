@@ -24,6 +24,9 @@ To run software on hardware you need an operating system. For microcontrollers s
 
 For the OS to work, it must recognize the hardware and know how to communicate with it. The most fundamental way software talks to hardware is through **registers**. Each hardware IP has its own set of control and status registers, sitting at specific offsets from a base address. A **driver** is the piece of software that knows where those registers are, what writing to them does, and what reading them back means. In short: a driver is the bridge between the OS and a physical piece of hardware.
 
+> 💡 **What is an IP?**
+> IP stands for "Intellectual Property." In hardware, we use it to describe self-contained hardware blocks. A Bluetooth chip is an IP, UART is an IP, AES is an IP. The term comes from the fact that a company or organization typically owns the design of that block. For example, lowRISC owns the design of the OpenTitan AES block, so we call it the "AES IP." A simple way to think about it: IP = hardware block.
+
 > 💡 **What are registers?**
 > Registers are small memory locations built directly into the hardware. Writing a specific value to a register tells the hardware to do something (like start an encryption operation). Reading a register tells you the hardware's current state (like whether it's done or idle). Every hardware block has its own set of registers sitting at fixed addresses in memory, this is called memory-mapped I/O.
 
@@ -44,28 +47,18 @@ To implement our out-of-tree driver we have to follow **Zephyr's expected folder
 ```bash
 your-driver-repo/  
 │
-├── drivers/ <subsystem>/  
+├── drivers/ (subsystem)/  
 │ ├── main-driver-code.c   # Most Important File!
 │ ├── Kconfig  
 │ └── CMakeLists.txt
 │
 ├── dts/ bindings/  
-│ └── <subsystem>/ vendor,device.yaml
+│ └── (subsystem)/ vendor,device.yaml
 │ └── vendor-prefixes.txt
 │
 ├── zephyr/ module.yml
 └── CMakeLists.txt
 ```
-
-> 💡 **What is a Devicetree?**
-> A Devicetree (`.dts` file) is a text file that describes your hardware to the OS — things like what peripherals exist, where they sit in memory, and which driver should handle them. Instead of your driver hardcoding a register address like `0x411f0000`, the devicetree file declares it and the driver reads it at build time. Think of it as a map of your board that the kernel consults before booting. As a unified point to your IP Base configurations like Base Address.
-
-> 💡 **What is a Devicetree Binding?**
-> A binding file (`.yaml`) is the _schema_ for a devicetree node. It tells Zephyr: "a node with `compatible = "lowrisc,opentitan-aes"` is allowed to have these properties, with these types." Without a binding, Zephyr doesn't know how to validate or parse your hardware node. It's the contract between the hardware description and the driver.
-
-> 💡 **What is Kconfig?**
-> Kconfig is Zephyr's configuration system. It lets you expose `CONFIG_` options for your driver, like `CONFIG_CRYPTO_OPENTITAN_MAX_SESSION`, that users can toggle on/off or set values for without touching your source code. When someone runs `west build`, Kconfig decides which drivers get compiled in and which don't.
-
 I know it may seem confusing at first, but we'll explain what each file means and what to write in it.
 
 Open the repo folders in another tab and try to map what you read and learn here to the actual code. In our case, the **subsystem** is `crypto` and the **vendor** is `lowrisc` and the **device** is `opentitan-aes`, so the structure maps directly to what you see in this repo. 
@@ -123,6 +116,37 @@ The first thing I did when I wanted to write my AES driver was open multiple tab
 ```
 
 **The sections follow a natural flow.** Sections 1–4 are all declaration: you tell Zephyr what your hardware is, what headers you need, what its registers look like, and how you'll store its state in memory. Sections 5–8 are the actual logic: you initialize the hardware, write the read/write helpers, implement the crypto operations, and manage sessions. Sections 9–11 are the wiring: you tell Zephyr what your hardware can do, plug your functions into the API struct, and register the device with the kernel. **describe → implement → connect.** We'll explore each section in depth:
+
+---
+
+### **Section 1 : Device Tree Compatibility**
+```c
+#define DT_DRV_COMPAT lowrisc_opentitan_aes  //vendor_device
+```
+This is just one line. But it's one of the most important lines in the file. This string must _exactly_ match the `compatible` property in your [devicetree binding file ](https://github.com/rknastenka/zephyr-aes-opentitan/blob/main/dts/bindings/crypto/lowrisc%2Copentitan-aes.yaml)(`vendor,device.yaml`). Zephyr uses it to link your driver to the right hardware node in the `.dts` file. If it doesn't match, no error, your driver just silently never loads.
+
+Here's a glimpse of what an AES node in a `.dts` file looks like:
+```bash
+/ {
+    soc {
+        aes0: aes@41100000 {
+            compatible = "lowrisc,opentitan-aes";
+            reg = <0x41100000 0x100>;
+            status = "okay";
+        };
+    };
+};
+```
+You don't write this in your driver. The developer or app calling your driver writes it, or more precisely, writes an **overlay** on top of the board's existing `.dts` file.
+As you can see in the [`.overlay`](https://github.com/rknastenka/zephyr-aes-opentitan/blob/main/tests/aes_test_app/app.overlay) file in the test app we implement to test the driver. And if you want to see what a full real-world `.dts` file looks like, here's the [OpenTitan Earl Grey board `.dts`](https://github.com/zephyrproject-rtos/zephyr/blob/main/boards/lowrisc/opentitan_earlgrey/opentitan_earlgrey.dts) from the Zephyr repo, you'll recognize the same structure.
+
+> 💡 What is a Devicetree?
+> A Devicetree (.dts file) is a text file that describes your hardware to the OS, things like what peripherals exist, where they sit in memory, and which driver should handle them. In the snippet above: the **compatible** property tells Zephyr which driver to use, **reg** is the base address and size of the hardware block in memory, and **status** works like an on/off switch, set it to "okay" to enable the block, or "disabled" to ignore it. The aes0 label is just a name with a counter, in case your board has multiple AES blocks, you'd have aes0, aes1...
+> 
+> The reason base addresses live in the devicetree and not in your driver code is simple: **every board places its hardware blocks at different memory addresses**. If you hardcoded 0x41100000 in your driver, it would only work on one specific board. By reading the address from the devicetree at build time, the same driver works everywhere.
+---
+
+
 
 
 # Building and Testing
