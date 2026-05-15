@@ -178,7 +178,7 @@ Before we build, let's quickly talk about what "building" actually means here. W
 
 Once the build succeeds you'll find your binary in `build/zephyr/zephyr.elf`, ready to be flashed to hardware or loaded into a simulator.
 
-1. System dependencies
+1. System dependencies (on your main ~root machine)
 ```bash
 sudo apt update
 sudo apt install -y git cmake ninja-build gperf ccache dfu-util \
@@ -227,7 +227,7 @@ git clone https://github.com/rknastenka/zephyr-aes-opentitan.git
 cd zephyr-aes-opentitan
 ```
 
-7. Build
+8. Build
 ```bash
 west build -b opentitan_earlgrey tests/aes_test_app -- -DZEPHYR_EXTRA_MODULES=$(pwd)
 ```
@@ -239,7 +239,6 @@ The `tests/aes_test_app` folder is a small Zephyr application: it's not the driv
 Its structure follows standard Zephyr app conventions:
 
 ```
-text
 tests/aes_test_app/
 ├── src/
 │   └── main.c         # The actual test code. calls the driver and checks the output
