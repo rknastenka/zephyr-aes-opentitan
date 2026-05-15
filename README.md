@@ -4,6 +4,8 @@ This repo is an out-of-tree Zephyr RTOS driver for the [OpenTitan](https://opent
 
 For now the driver only supports ECB mode, will add support for other AES modes later on.
 
+[Building and Testing](#building-and-testing)  •  [Learn How To Create Your Own Zephyr Driver](#learn-how-to-create-your-own-zephyr-driver)
+
 ---
 ---
 # Learn How To Create Your Own Zephyr Driver
@@ -12,8 +14,12 @@ When I first started looking for tutorials on how to write a driver, they all fe
 
 Hope you enjoy reading! Let me know if there are any mistakes...
 
-
-
+- [Get Familiar With the Concepts First](#get-familiar-with-the-concepts-first)
+- [Zephyr Out-of-Tree Project Folder Structure](#zephyr-out-of-tree-project-folders-structure)
+- [Main C Driver Code Explained](#lets-start-writing-the-actual-drivers-code)
+  - [Section 1: Device Tree Compatibility](#section-1--device-tree-compatibility)
+  - [Section 2: Header Includes](#section-2-header-includes)
+    
 ## Get Familiar With the Concepts First!
 To run software on hardware you need an operating system. For microcontrollers specifically, we typically use a real-time operating system (RTOS), a type of OS that prioritizes determinism, time-sensitive operations, and resource-constrained devices. Just like there are many general-purpose operating systems you already know: Windows, Linux, macOS. There are also many RTOSes, and Zephyr is just one of them. Zephyr is becoming really popular these days for many reasons beyond being fully open source: its modularity, broad board support, and security-first design.
 
@@ -119,7 +125,7 @@ The first thing I did when I wanted to write my AES driver was open multiple tab
 
 ---
 
-### **Section 1 : Device Tree Compatibility**
+### Section 1 : Device Tree Compatibility
 ```c
 #define DT_DRV_COMPAT lowrisc_opentitan_aes  //vendor_device
 ```
@@ -146,14 +152,12 @@ As you can see in the [`.overlay`](https://github.com/rknastenka/zephyr-aes-open
 > The reason base addresses live in the devicetree and not in your driver code is simple: **every board places its hardware blocks at different memory addresses**. If you hardcoded 0x41100000 in your driver, it would only work on one specific board. By reading the address from the devicetree at build time, the same driver works everywhere.
 ---
 
-### **Section 2: Header Includes**
+### Section 2: Header Includes
 ```c
 #include <stdint.h>               
-#include <errno.h>                 
 #include <string.h>                 
 
 #include <zephyr/kernel.h>         
-#include <zephyr/irq.h>             
 #include <zephyr/device.h>    
 ...
 ..
