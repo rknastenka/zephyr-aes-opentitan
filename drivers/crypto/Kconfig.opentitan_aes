@@ -9,6 +9,13 @@ config CRYPTO_OPENTITAN_AES
 	help
 	  Enable this option to use OpenTitan AES hardware accelerator
 
+config CRYPTO_OPENTITAN_AES_RENODE_COMPAT
+	bool "Renode key length encoding workaround"
+	default n
+	help
+	  Use Renode's non-standard KEY_LEN encoding. This is only for
+	  simulation in Renode. Real OpenTitan hardware uses one-hot values.
+
 
 config CRYPTO_OPENTITAN_MAX_SESSION
 	int "Maximum number of concurrent sessions"

@@ -251,6 +251,9 @@ static int opentitan_aes_init(const struct device *dev)
         // share0-share7
         for (int i = 0; i < 8; i++) {                                             // The loop always runs 8 times, all 8 register slots must be written
             uint32_t share0_word = (i < (int)key_word_count) ? key_words[i] : 0u; // if i is less than the actual key word count, write the real key word; otherwise write zero for padding
+            if (i < (int)key_word_count) {
+                LOG_DBG("KEY_SHARE0_%d = 0x%08x", i, share0_word);
+            }
             sys_write32(share0_word, base + AES_KEY_SHARE0_0_REG_OFFSET + i * 4); // jump 4bytes to go to the next SHARE0_i register
         }
 
@@ -292,6 +295,7 @@ static void aes_write_block(mm_reg_t base,
 {
     for (int i = 0; i < 4; i++) {
         uint32_t word = sys_get_le32(src + i * 4);
+        LOG_DBG("DATA_IN_%d = 0x%08x", i, word);
         sys_write32(word, base + AES_DATA_IN_0_REG_OFFSET + i * 4);
     }
 }
@@ -412,6 +416,7 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
                 ((uint32_t)sess->dir << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
                 (AES_CTRL_SHADOWED_MODE_VALUE_AES_ECB << AES_CTRL_SHADOWED_MODE_OFFSET) | // MODE
                 sess->reg_ctrl_key_len; // pre-shifted to bits [11:8] by begin_session    // KEY_LEN
+    LOG_DBG("CTRL_SHADOWED = 0x%08x", ctrl_val);
 
     /*
 	 * Bit layout:
@@ -568,13 +573,19 @@ static int opentitan_aes_begin_session(const struct device *dev,
     uint32_t key_words_count;   // number of 32-bit key words (4 or 8)
 
     if (key_len_bits == 128u) {
-
+    #if defined(CONFIG_CRYPTO_OPENTITAN_AES_RENODE_COMPAT)
+        reg_ctrl_key_len = 1u << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;
+    #else
         reg_ctrl_key_len = AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_128 << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;  // 1<<8 = 0x100 (1’b001 shifted to bits [11:8])
+    #endif
         key_words_count = 4u; //aes_write_key() uses this to decide how many SHARE0 slots receive
 
     } else if (key_len_bits == 256u) {
-
+    #if defined(CONFIG_CRYPTO_OPENTITAN_AES_RENODE_COMPAT)
+        reg_ctrl_key_len = 2u << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;
+    #else
         reg_ctrl_key_len = AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256 << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;  // 4<<8 = 0x400 (3’b100 shifted to bits [11:8])
+    #endif
         key_words_count  = 8u;
 
     } else {
