@@ -463,23 +463,20 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 
 
     // WRITE THE FIRST BLOCK TO START THE ENCRYPTION/DECRYPTION
-	aes_write_block(base, pkt->in_buf); /* block 0 — hardware auto-starts */
-// this is the first block, we write it before the loop, 
-// because after writing the first block, 
-// the hardware starts processing and 
-// we can start ***polling for the output of the first block while writing the second block****, 
-// which is more efficient than waiting for the first block to finish before writing the second block.
+    aes_write_block(base, pkt->in_buf); /* block 0 — hardware auto-starts */
 
+    // Wait for block 0 to be latched before optionally pre-loading block 1.
+    ret = poll_input_ready(base);
+    if (ret) {
+        return ret;
+    }
 
- // How the pipline works in ECB mode:
+    // Pre-load block 1 if present (pipeline warm-up).
+    if (num_blocks > 1) {
+        aes_write_block(base, pkt->in_buf + 16);
+    }
 
-// in every iteration:
-// READ *block0* --- WRITE *blcok1*
-// READ *block1* --- WRITE *block2*
-
-// REF OpenTitan: "While the AES unit is performing encryption/decryption, the processor can safely write the next input data block into the CSRs."
-
-	for (uint32_t i = 0; i < num_blocks; i++) {
+    for (uint32_t i = 0; i < num_blocks; i++) {
 
 		// Wait for block i to complete the encryption/decryption and the result to be ready in DATA_OUT before reading it.
 		ret = poll_output_valid(base);
@@ -489,16 +486,13 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 
 		
         // READ THE ENCRYPTED/DECRYPTED block
-		aes_read_block(base, pkt->out_buf + i * 16);     // Read all *four* DATA_OUT words(16bytes), must to release interlock so it can accept the next block.
+        aes_read_block(base, pkt->out_buf + i * 16);     // Read all *four* DATA_OUT words(16bytes), must to release interlock so it can accept the next block.
 
-        // SEND A NEW BLOCK TO BE ENCRYPTED/DECRYPTED
-		if (i < num_blocks - 1) {
-			aes_write_block(base, pkt->in_buf + (i + 1) * 16); // this means read the first 
-            // in_buf is just a (1byte) pointer, it points to the first byte of the input message, and we are treating it as an array of bytes.
-		}
-        // we write the next input block direclty after reading the output: No poll_input_ready() needed -- note down below.
-
-	}
+        // SEND A NEW BLOCK TO BE ENCRYPTED/DECRYPTED (block i+2 when available)
+        if (i + 2 < num_blocks) {
+            aes_write_block(base, pkt->in_buf + (i + 2) * 16);
+        }
+    }
     // out_buf: [ encrypted block 0 ][ encrypted block 1 ] ...
 
 	return 0;
@@ -572,7 +566,7 @@ static int opentitan_aes_begin_session(const struct device *dev,
     uint32_t reg_ctrl_key_len;  // we want to shift it to the correct position in the control reg down below
     uint32_t key_words_count;   // number of 32-bit key words (4 or 8)
 
-    if (key_len_bits == 128u) {
+        if (key_len_bits == 128u) {
     #if defined(CONFIG_CRYPTO_OPENTITAN_AES_RENODE_COMPAT)
         reg_ctrl_key_len = 1u << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;
     #else
@@ -580,7 +574,7 @@ static int opentitan_aes_begin_session(const struct device *dev,
     #endif
         key_words_count = 4u; //aes_write_key() uses this to decide how many SHARE0 slots receive
 
-    } else if (key_len_bits == 256u) {
+        } else if (key_len_bits == 256u) {
     #if defined(CONFIG_CRYPTO_OPENTITAN_AES_RENODE_COMPAT)
         reg_ctrl_key_len = 2u << AES_CTRL_SHADOWED_KEY_LEN_OFFSET;
     #else
