@@ -620,17 +620,9 @@ static int opentitan_aes_begin_session(const struct device *dev,
     sess->key_words_count  = key_words_count;   // 4 or 8;
 
     // NOw we need to copy the *key* data from the caller's app to our session struct!
-    // memory copy:  memcpy(destination, source, num_bytes); 
-    memcpy(sess->key_words,
-           ctx->key.bit_stream,
-           key_words_count * sizeof(uint32_t)); // AES-128= 4*4= 16bytes
-//                                              // AES-256= 8*4= 32bytes
-
-// Notes:
-// "memcpy" treating the key as raw bytes, then later write them with sys_write32() (native endian).
-// This is correct only if the CPU is little-endian (RISC-V is LE by default).
-// If you ever port to a BE target, you need sys_cpu_to_le32() on each word. 
-// --- Consider using sys_get_le32() here like you do in aes_write_block -----
+    for (uint32_t i = 0; i < key_words_count; i++) {
+        sess->key_words[i] = sys_get_le32(ctx->key.bit_stream + i * 4u);
+    }
 
 
     sess->in_use = true; // means the session slot is now claimed and occupied by a session, so other threads can't claim it until it's freed.
