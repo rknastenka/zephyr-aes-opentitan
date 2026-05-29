@@ -1,0 +1,10 @@
+mach create "opentitan"
+machine LoadPlatformDescription @platforms/cpus/opentitan-earlgrey.repl
+
+showAnalyzer sysbus.uart0
+
+sysbus LoadELF $ORIGIN/build/zephyr/zephyr.elf
+
+machine StartGdbServer 3333 true
+
+start
