@@ -59,20 +59,9 @@ struct opentitan_aes_session {
     bool in_use;
     const struct device *dev;
     enum cipher_op dir;         // operation: encrypt/decrypt
-// in zephyr APIs, 1=enc, 2=dec.
-// which is the same as in the opentitan CTRL Reg space for (0x1 for enc, 0x2 for dec)
-// placed in bit 0 and bit 1 so we don't need to do any mapping or shifting
-// that's why we can use the cipher_op (zephyr API) enum 
-// directly in the session struct, instead of defining our own enum for enc/dec.
-
-// on the contrast here, zephyer API defines the cipher modes as bitmasks (1 for ECB, 2 for CBC),
-// but in the opentitan hardware, the mode (ECB/CBC) is a value that sits in bits 2-7 of the control register
-// that is why we can't use the zephyr API enum for cipher modes directly in the session struct,
-// and instead we need to define our own enum or just use a uint32_t for the mode
-// if we wrote: enum cipher_mode mode here, we would have to do a mapping from the zephyr API enum values (1 for ECB, 2 for CBC)
-// to the opentitan hardware values every time we set up the control register for an operation, 
-// which adds unnecessary complexity and overhead
-// which we have to okay use enum but then shift the valuse to the 2-7 bits space each time the computert encrypts/decrypts a block.
+// in zephyr APIs, 0=dec, 1=enc.
+// opentitan CTRL Reg space needs 0x1 for enc, 0x2 for dec.
+// We map these in the mode operation functions.
     uint32_t reg_ctrl_key_len;  // key length: 128/256 -- pre-shifted to bits [11:8] of CTRL
     uint32_t key_words_count;   // 4 = AES-128, 8 = AES-256 
     uint32_t key_words[8];      // register to store the key (8 words * 32bits = 256-bit max key)  
@@ -232,6 +221,7 @@ static void aes_read_block(mm_reg_t base, uint8_t *dst)
 {
     for (int i = 0; i < 4; i++) {
         uint32_t word = sys_read32(base + AES_DATA_OUT_0_REG_OFFSET + i * 4);
+        LOG_DBG("DATA_OUT_%d raw = 0x%08x", i, word);
         sys_put_le32(word, dst + i * 4);
     }
 }
@@ -305,15 +295,20 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 
 	// We set up the control register once at the start of the operation,
     // and the hardware remains configured for the entire message.
+    uint32_t op_val = (sess->dir == CRYPTO_CIPHER_OP_ENCRYPT) ? 
+                      AES_CTRL_SHADOWED_OPERATION_VALUE_AES_ENC : 
+                      AES_CTRL_SHADOWED_OPERATION_VALUE_AES_DEC;
+
     uint32_t ctrl_val =
-                ((uint32_t)sess->dir << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
+                (op_val << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
                 (AES_CTRL_SHADOWED_MODE_VALUE_AES_ECB << AES_CTRL_SHADOWED_MODE_OFFSET) | // MODE
                 sess->reg_ctrl_key_len; // pre-shifted to bits [11:8] by begin_session    // KEY_LEN
     LOG_DBG("CTRL_SHADOWED = 0x%08x", ctrl_val);
+    LOG_DBG("OPERATION = %d, MODE = %d, KEY_LEN = %d", (ctrl_val & 0x3), ((ctrl_val >> AES_CTRL_SHADOWED_MODE_OFFSET) & 0x3f), ((ctrl_val >> AES_CTRL_SHADOWED_KEY_LEN_OFFSET) & 0xff));
 
     /*
 	 * Bit layout:
-	 *   [1:0]  OPERATION  — (uint32_t)sess->dir : (1=enc, 2=dec; matches hardware directly)
+	 *   [1:0]  OPERATION  — op_val (1=enc, 2=dec)
 	 *   [7:2]  MODE       — AES_ECB shifted to bits [7:2]
 	 *   [11:8] KEY_LEN    — sess->reg_ctrl_key_len (pre-shifted by begin_session)
 	 *   [15]   MANUAL_OP  — 0 (autostart enabled)
@@ -326,8 +321,10 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
         return ret;
     }
 
+    LOG_DBG("Before writing CTRL");
 	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
 	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET); // shadowed
+    LOG_DBG("After writing CTRL, STATUS=0x%08x", sys_read32(base + AES_STATUS_REG_OFFSET));
 
 	 // Wait for IDLE after writing CTRL.
 	 // A CTRL write may trigger an internal PRNG reseed.
@@ -412,8 +409,12 @@ static int opentitan_aes_cbc_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt, 
     uint32_t num_blocks = pkt->in_len / 16;
     const uint8_t *iv_bytes = iv;
 
+    uint32_t op_val = (sess->dir == CRYPTO_CIPHER_OP_ENCRYPT) ? 
+                      AES_CTRL_SHADOWED_OPERATION_VALUE_AES_ENC : 
+                      AES_CTRL_SHADOWED_OPERATION_VALUE_AES_DEC;
+
     uint32_t ctrl_val =
-                ((uint32_t)sess->dir << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
+                (op_val << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
                 (AES_CTRL_SHADOWED_MODE_VALUE_AES_CBC << AES_CTRL_SHADOWED_MODE_OFFSET) | // MODE
                 sess->reg_ctrl_key_len; // pre-shifted to bits [11:8] by begin_session    // KEY_LEN
     LOG_DBG("CTRL_SHADOWED = 0x%08x", ctrl_val);
@@ -718,7 +719,7 @@ static int opentitan_aes_begin_session(const struct device *dev,
 // Now we have created a session
 // we have to populate this session with the needed info
     sess->dev  = dev;      // ecb_op() needs dev->config->base_addr  
-    sess->dir  = op_type;  // CRYPTO_CIPHER_OP_ENCRYPT=1, _DECRYPT=2. Matches OpenTitan CTRL-OPERATION field directly — no remapping needed. 
+    sess->dir  = op_type;  // CRYPTO_CIPHER_OP_ENCRYPT=1, _DECRYPT=0. Will be mapped to HW values. 
     sess->reg_ctrl_key_len = reg_ctrl_key_len;  // pre-shifted above for direct use in the control register.
     sess->key_words_count  = key_words_count;   // 4 or 8;
 
@@ -751,6 +752,11 @@ static int opentitan_aes_begin_session(const struct device *dev,
     
     ctx->drv_sessn_state = sess; // this is how we link the session state to the ctx, so that the ecb_op() can retrieve it later when it needs to access the session info like the key and direction.
     // REF: https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html#a624cf985cf35b3aa8681c3892fd67429
+
+    uint32_t op_hw = (op_type == CRYPTO_CIPHER_OP_ENCRYPT) ? 
+                     AES_CTRL_SHADOWED_OPERATION_VALUE_AES_ENC : 
+                     AES_CTRL_SHADOWED_OPERATION_VALUE_AES_DEC;
+    LOG_DBG("BEGIN_SESSION CTRL_MASK = 0x%08x", sess->reg_ctrl_key_len | op_hw);
 
     return 0;
 }
