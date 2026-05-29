@@ -44,6 +44,7 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 #define AES_CTRL_SHADOWED_MODE_OFFSET 2
 #define AES_CTRL_SHADOWED_MODE_VALUE_AES_ECB 0x1
 #define AES_CTRL_SHADOWED_MODE_VALUE_AES_CBC 0x2
+#define AES_CTRL_SHADOWED_MODE_VALUE_AES_CTR  0x10
 
 #define AES_CTRL_SHADOWED_KEY_LEN_OFFSET 8
 #define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_128 0x1
@@ -69,7 +70,7 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 // Including them now just adds dead code.
 
 // ------------------------------------------------------
-// 4. Configuration Structure
+// 4. Configuration Structs
 // ------------------------------------------------------
 
 struct opentitan_aes_config {
@@ -122,22 +123,19 @@ struct opentitan_aes_data {
 // 5. Initialization and Reset
 // ------------------------------------------------------
 
-// Replace all the polling function with one helper in v2
-// static int poll_idle(mm_reg_t base)
-// {
-//     uint32_t t = 0;
-//     while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
-//         if (t++ > (AES_TIMEOUT_US / 10)) {
-//             return -ETIMEDOUT;
-//         }
-//         k_busy_wait(10);
-//     }
-//     return 0;
-// }
-
-
 #define AES_TIMEOUT_US                      10000  // 10ms timeout for hardware to respond
 
+static int poll_idle(mm_reg_t base)
+{
+    uint32_t t = 0;
+    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
+        if (t++ > (AES_TIMEOUT_US / 10)) {
+            return -ETIMEDOUT;
+        }
+        k_busy_wait(10);
+    }
+    return 0;
+}
 
 /*
  * Hardware-level flush.
@@ -147,26 +145,14 @@ struct opentitan_aes_data {
  */
 static int opentitan_aes_hw_flush(mm_reg_t base)
 {
-    uint32_t timeout = 0;
-
-
-/* explainging the WHILE loop:                         */
-//    Keep reading the STATUS register.
-//   Check if bit 0 is 1 (hardware idle).
-//   If yes → stop waiting, get out of the loop.
-//   If no  → wait 10 microseconds, try again.
-//   If we've tried 1000 times → give up, return an error.
-
+    int ret;
 
     // Wait for IDLE before touching Control Register
     // Writes to Control Register are silently ignored if hardware is not idle
-    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1 << AES_STATUS_IDLE_BIT))) {
-        if (timeout++ > (AES_TIMEOUT_US / 10)) {
-            return -ETIMEDOUT;
-        }
-        k_busy_wait(10);
+    ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
     }
-    timeout = 0;
 
     // Set MANUAL_OPERATION=1 to disable autostart the enc/dec
     // (noted in opentitan AES HW docs to be required for a successful flush)
@@ -180,14 +166,10 @@ static int opentitan_aes_hw_flush(mm_reg_t base)
 
 
     // Re-poll IDLE bcz control register write may trigger an internal PRNG reseed
-    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1 << AES_STATUS_IDLE_BIT))) {
-        if (timeout++ > (AES_TIMEOUT_US / 10)) {
-            return -ETIMEDOUT;
-        }
-        k_busy_wait(10);
+    ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
     }
-    timeout = 0;
-
 
     // Trigger hardware clear of keys, IVs, and all data registers
     sys_write32((1 << AES_TRIGGER_KEY_IV_DATA_IN_CLEAR_BIT) |
@@ -198,15 +180,7 @@ static int opentitan_aes_hw_flush(mm_reg_t base)
                 
     // Wait for IDLE after clear completes
     // The hardware clear takes several clock cycles to overwrite all registers with PRNG-generated data.
-    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1 << AES_STATUS_IDLE_BIT))) {
-        if (timeout++ > (AES_TIMEOUT_US / 10)) {
-            return -ETIMEDOUT;
-        }
-        k_busy_wait(10);
-    }
-
-
-    return 0;
+    return poll_idle(base);
 }
 
 
@@ -399,8 +373,6 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 	const struct opentitan_aes_session *sess = (const struct opentitan_aes_session *)ctx->drv_sessn_state; //sess is a pointer to a pointer to know this exact session state(dir, key, key_len)
 	const struct opentitan_aes_config *cfg =   (const struct opentitan_aes_config *)sess->dev->config;
 	mm_reg_t base = cfg->base_addr;
-	
-    uint32_t t = 0;
 
 	 // ECB has no padding in v1 - caller must supply one or more complete 16-byte blocks.
 	if (pkt->in_len == 0 || (pkt->in_len % 16) != 0) { // in_len: Number of input **bytes** to process. // it must be non zero and a multiple of 16 
@@ -429,9 +401,9 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 
     // Wait for IDLE before touching Control Register
     // Writes to Control Register are silently ignored if hardware is not idle
-    while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
-        if (t++ > (AES_TIMEOUT_US / 10)) { return -ETIMEDOUT; }
-        k_busy_wait(10);
+    int ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
     }
 
 	sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
@@ -441,11 +413,9 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 	 // Wait for IDLE after writing CTRL.
 	 // A CTRL write may trigger an internal PRNG reseed.
      // Key writes issued before IDLE is set are silently ignored.
-	while (!(sys_read32(base + AES_STATUS_REG_OFFSET) & (1u << AES_STATUS_IDLE_BIT))) {
-		if (t++ > (AES_TIMEOUT_US / 10)) {
-			return -ETIMEDOUT;
-		}
-		k_busy_wait(10);
+	ret = poll_idle(base);
+	if (ret != 0) {
+		return ret;
 	}
 /*
 * Opentitan Reference: Since writing this register may initiate the reseeding of the internal PRNGs,
@@ -456,7 +426,7 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 	aes_write_key(base, sess->key_words, sess->key_words_count); // block 0 - outside the loop
 
     // check INPUT_READY reg before writing the first block
-    int ret = poll_input_ready(base);
+    ret = poll_input_ready(base);
 	if (ret) {
 		return ret;
 	}
@@ -467,9 +437,7 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
 
     // Wait for block 0 to be latched before optionally pre-loading block 1.
     ret = poll_input_ready(base);
-    if (ret) {
-        return ret;
-    }
+    if (ret) { return ret; }
 
     // Pre-load block 1 if present (pipeline warm-up).
     if (num_blocks > 1) {
@@ -477,16 +445,12 @@ static int opentitan_aes_ecb_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt) 
     }
 
     for (uint32_t i = 0; i < num_blocks; i++) {
-
-		// Wait for block i to complete the encryption/decryption and the result to be ready in DATA_OUT before reading it.
 		ret = poll_output_valid(base);
 		if (ret) {
 			return ret;
 		}
 
-		
-        // READ THE ENCRYPTED/DECRYPTED block
-        aes_read_block(base, pkt->out_buf + i * 16);     // Read all *four* DATA_OUT words(16bytes), must to release interlock so it can accept the next block.
+		aes_read_block(base, pkt->out_buf + i * 16);     // Read all *four* DATA_OUT words(16bytes), must to release interlock so it can accept the next block.
 
         // SEND A NEW BLOCK TO BE ENCRYPTED/DECRYPTED (block i+2 when available)
         if (i + 2 < num_blocks) {
@@ -506,6 +470,257 @@ there's indeed a one cycle gap here, but we're writing software, we don't care m
 */
 
 
+/*
+ * CBC mode: similar to ECB but with the IV handling
+ */
+static int opentitan_aes_cbc_op(struct cipher_ctx *ctx, struct cipher_pkt *pkt, uint8_t *iv)
+{
+    const struct opentitan_aes_session *sess =
+        (const struct opentitan_aes_session *)ctx->drv_sessn_state;
+    const struct opentitan_aes_config *cfg =
+        (const struct opentitan_aes_config *)sess->dev->config;
+    mm_reg_t base = cfg->base_addr;
+
+    /* CBC requires a 16-byte IV. */
+    if (iv == NULL) {
+        LOG_ERR("CBC mode requires a non-NULL IV");
+        return -EINVAL;
+    }
+
+    /* Input must be a non-empty multiple of 16 bytes. */
+    if (pkt->in_len == 0 || (pkt->in_len % 16) != 0) {
+        return -EINVAL;
+    }
+
+    uint32_t num_blocks = pkt->in_len / 16;
+    const uint8_t *iv_bytes = iv;
+
+	// We set up the control register once at the start of the operation, and the hardware remains configured for the entire message.
+    // The OPERATION, MODE, and KEY_LEN
+    uint32_t ctrl_val =
+                ((uint32_t)sess->dir << AES_CTRL_SHADOWED_OPERATION_OFFSET)            |  // OPERATION
+                (AES_CTRL_SHADOWED_MODE_VALUE_AES_CBC << AES_CTRL_SHADOWED_MODE_OFFSET) | // MODE
+                sess->reg_ctrl_key_len; // pre-shifted to bits [11:8] by begin_session    // KEY_LEN
+    LOG_DBG("CTRL_SHADOWED = 0x%08x", ctrl_val);
+
+    /* Wait for IDLE before writing CTRL. */
+    int ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
+    }
+
+    sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+    sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+
+    ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
+    }
+
+    aes_write_key(base, sess->key_words, sess->key_words_count);
+
+    /*
+     * Load the IV.
+     * For encryption: this is the user-supplied IV for the first block.
+     * For decryption: this is also the user-supplied IV for the first block.
+    * After every block the hardware auto-updates IV_0..IV_3 to the last
+    * ciphertext block, so we MUST NOT re-write the IV between blocks.
+    */
+
+ /*
+ * Software MUST NOT re-write IV
+ * between blocks of the same message.
+ *
+ * Ref: OpenTitan AES Theory of Operation, Datapath step 7:
+ *   "If running in CBC mode, the IV registers are updated with the output
+ *    data (encryption) or the value stored in the previous input data
+ *    register (decryption)."
+ * https://opentitan.org/book/hw/ip/aes/doc/theory_of_operation.html
+ */
+
+    uint32_t iv_words[4];
+    for (int i = 0; i < 4; i++) {
+        iv_words[i] = sys_get_le32(iv_bytes + i * 4);
+    }
+    aes_write_iv(base, iv_words);
+
+    // Wait for INPUT_READY before feeding the first block.
+    ret = poll_input_ready(base);
+    if (ret) { return ret; }
+
+    // WRITE THE FIRST BLOCK TO START THE ENCRYPTION/DECRYPTION
+    aes_write_block(base, pkt->in_buf);
+
+    // Wait for block 0 to be latched before optionally pre-loading block 1.
+    ret = poll_input_ready(base);
+    if (ret) { return ret; }
+
+    // Pre-load block 1 if present (pipeline warm-up).
+    if (num_blocks > 1) {
+        aes_write_block(base, pkt->in_buf + 16);
+    }
+
+    /* Pipeline loop: read output N, write input N+2. */
+    for (uint32_t i = 0; i < num_blocks; i++) {
+        ret = poll_output_valid(base);
+        if (ret) { return ret; }
+
+        aes_read_block(base, pkt->out_buf + i * 16);
+
+        if (i + 2 < num_blocks) {
+            aes_write_block(base, pkt->in_buf + (i + 2) * 16);
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * CTR mode: AES-CTR encrypt/decrypt.
+ *
+ * Key differences from CBC:
+ *   - No padding required: CTR works on any input length. The last block
+ *     may be partial — the hardware XORs only the valid bytes.
+ *   - Hardware auto-increments the counter after each block — software
+ *     must NOT re-write the IV between blocks of the same message.
+ */
+static int opentitan_aes_ctr_op(struct cipher_ctx *ctx,
+                                 struct cipher_pkt *pkt,
+                                 uint8_t *ctr)
+{
+    const struct opentitan_aes_session *sess =
+        (const struct opentitan_aes_session *)ctx->drv_sessn_state;
+    const struct opentitan_aes_config *cfg =
+        (const struct opentitan_aes_config *)sess->dev->config;
+    mm_reg_t base = cfg->base_addr;
+
+    if (ctr == NULL) {
+        LOG_ERR("CTR mode requires a non-NULL counter/IV");
+        return -EINVAL;
+    }
+
+    if (pkt->in_len == 0) {
+        return -EINVAL;
+    }
+
+    uint32_t num_full_blocks = pkt->in_len / 16;
+    uint32_t remainder       = pkt->in_len % 16;
+
+    uint32_t num_blocks = num_full_blocks + (remainder ? 1 : 0);
+
+    /*
+     * CTR mode always uses AES_ENC for the keystream generation,
+     * regardless of whether the session is encrypting or decrypting.
+     * The OPERATION field in CTRL must be AES_ENC (0x1).
+     */
+    uint32_t ctrl_val =
+        (AES_CTRL_SHADOWED_OPERATION_VALUE_AES_ENC << AES_CTRL_SHADOWED_OPERATION_OFFSET) |
+        (AES_CTRL_SHADOWED_MODE_VALUE_AES_CTR      << AES_CTRL_SHADOWED_MODE_OFFSET) |
+        sess->reg_ctrl_key_len;
+
+    LOG_DBG("CTR CTRL_SHADOWED = 0x%08x", ctrl_val);
+
+    /* Wait for IDLE before writing CTRL. */
+    int ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Double-write (shadowed register). */
+    sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+    sys_write32(ctrl_val, base + AES_CTRL_SHADOWED_REG_OFFSET);
+
+    /* Re-poll IDLE: CTRL write may trigger PRNG reseed. */
+    ret = poll_idle(base);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Load the key. */
+    aes_write_key(base, sess->key_words, sess->key_words_count);
+
+    /*
+     * Load the initial counter value into IV_0..IV_3.
+     * Hardware auto-increments after each block — do NOT re-write between blocks.
+     */
+    uint32_t iv_words[4];
+    for (int i = 0; i < 4; i++) {
+        iv_words[i] = sys_get_le32(ctr + i * 4);
+    }
+    aes_write_iv(base, iv_words);
+
+    /* --- Pipeline loop (same pattern as ECB/CBC) --- */
+
+    ret = poll_input_ready(base);
+    if (ret) { return ret; }
+
+    /*
+     * For the partial last block, pad the input to 16 bytes with zeros,
+     * feed the full padded block to hardware, then copy only 'remainder'
+     * bytes from the output. The hardware always processes 128-bit blocks.
+     */
+    uint8_t padded_in[16]  = {0};
+    uint8_t padded_out[16] = {0};
+
+    // Write block 0.
+    if (num_full_blocks == 0) {
+        /* Only one partial block: pad, process, copy partial output. */
+        memcpy(padded_in, pkt->in_buf, remainder);
+        aes_write_block(base, padded_in);
+        ret = poll_output_valid(base);
+        if (ret) { return ret; }
+        aes_read_block(base, padded_out);
+        memcpy(pkt->out_buf, padded_out, remainder);
+        return 0;
+    }
+
+    // Write first full block — hardware auto-starts.
+    aes_write_block(base, pkt->in_buf);
+
+    ret = poll_input_ready(base);
+    if (ret) { return ret; }
+
+    if (num_blocks > 1) {
+        if (num_full_blocks > 1) {
+            aes_write_block(base, pkt->in_buf + 16);
+        } else {
+            // Block 1 is the partial block.
+            memset(padded_in, 0, sizeof(padded_in));
+            memcpy(padded_in, pkt->in_buf + 16, remainder);
+            aes_write_block(base, padded_in);
+        }
+    }
+
+    // Pipeline: read output i, write input i+2.
+    for (uint32_t i = 0; i < num_blocks; i++) {
+        ret = poll_output_valid(base);
+        if (ret) { return ret; }
+
+        bool is_last    = (i == num_blocks - 1);
+        bool last_partial = is_last && (remainder != 0);
+
+        if (last_partial) {
+            aes_read_block(base, padded_out);
+            memcpy(pkt->out_buf + i * 16, padded_out, remainder);
+        } else {
+            aes_read_block(base, pkt->out_buf + i * 16);
+        }
+
+        uint32_t next = i + 2;
+        if (next < num_blocks) {
+            bool next_is_partial = (next == num_blocks - 1) && (remainder != 0);
+            if (next_is_partial) {
+                memset(padded_in, 0, sizeof(padded_in));
+                memcpy(padded_in, pkt->in_buf + next * 16, remainder);
+                aes_write_block(base, padded_in);
+            } else {
+                aes_write_block(base, pkt->in_buf + next * 16);
+            }
+        }
+    }
+
+    return 0;
+}
 
 // ------------------------------------------------------
 // 8. Session Management
@@ -519,7 +734,7 @@ there's indeed a one cycle gap here, but we're writing software, we don't care m
  * ctx->drv_sessn_state is set to the claimed slot so that ecb_op() can
  * retrieve it as:
  *   const struct opentitan_aes_session *sess = (const struct opentitan_aes_session *)ctx->drv_sessn_state;
- 
+ * 
  * v1 scope: ECB only.  All other modes return -ENOTSUP immediately.
  */
 
@@ -546,7 +761,10 @@ static int opentitan_aes_begin_session(const struct device *dev,
     }
 
     // Only ECB is supported 
-    if (mode != CRYPTO_CIPHER_MODE_ECB) {
+    if (mode != CRYPTO_CIPHER_MODE_ECB &&
+        mode != CRYPTO_CIPHER_MODE_CBC &&
+        mode != CRYPTO_CIPHER_MODE_CTR
+    ) {
         LOG_ERR("Unsupported mode %d; only ECB is supported in v1", mode);
         return -ENOTSUP;
     }
@@ -640,7 +858,16 @@ static int opentitan_aes_begin_session(const struct device *dev,
     
     // The Zephyr crypto calls cipher_block_op(ctx, pkt), which internally does ctx->ops.block_crypt_hndlr(ctx, pkt).
     // If it is left NULL, every encrypt/decrypt call could silently fail
-    ctx->ops.block_crypt_hndlr = opentitan_aes_ecb_op;
+    if (mode == CRYPTO_CIPHER_MODE_ECB) {
+        ctx->ops.block_crypt_hndlr = opentitan_aes_ecb_op;
+        LOG_INF("AES session started: mode=ECB dir=%d key=%u bits", op_type, key_len_bits);
+    } else if (mode == CRYPTO_CIPHER_MODE_CBC) {
+        ctx->ops.cbc_crypt_hndlr = opentitan_aes_cbc_op;
+        LOG_INF("AES session started: mode=CBC dir=%d key=%u bits", op_type, key_len_bits);
+    } else { /* CTR */
+        ctx->ops.ctr_crypt_hndlr = opentitan_aes_ctr_op;
+        LOG_INF("AES session started: mode=CTR key=%u bits", key_len_bits);
+    }
 
      // v2: for a CBC session this line becomes:
      // ctx->ops.cbc_crypt_hndlr = opentitan_aes_cbc_op;
