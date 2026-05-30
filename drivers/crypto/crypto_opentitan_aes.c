@@ -35,9 +35,9 @@ LOG_MODULE_REGISTER(opentitan_aes, CONFIG_CRYPTO_LOG_LEVEL);
 
 #define AES_CTRL_SHADOWED_KEY_LEN_OFFSET 8
 #define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_128 0x1
-#define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256                                \
-  0x4 /* will not support AES-192 in v1, 128 and 256 are enough for now,       \
-         192-bit keys are not commonly used in practice. */
+#define AES_CTRL_SHADOWED_KEY_LEN_VALUE_AES_256 0x4
+/* will not support AES-192 in v1, 128 and 256 are enough for now,
+  192-bit keys are not commonly used in practice. */
 
 #define AES_CTRL_SHADOWED_MANUAL_OPERATION_BIT 15
 
@@ -64,11 +64,10 @@ struct opentitan_aes_session {
                       /* in zephyr APIs, 0=dec, 1=enc. */
   /* opentitan CTRL Reg space needs 0x1 for enc, 0x2 for dec. */
   /* We map these in the mode operation functions. */
-  uint32_t reg_ctrl_key_len; /* key length: 128/256 -- pre-shifted to bits
-                                [11:8] of CTRL */
-  uint32_t key_words_count;  /* 4 = AES-128, 8 = AES-256 */
-  uint32_t key_words[8];     /* register to store the key (8 words * 32bits =
-                                256-bit max key) */
+  uint32_t reg_ctrl_key_len;
+  uint32_t key_words_count; /* 4 = AES-128, 8 = AES-256 */
+  uint32_t key_words[8];    /* register to store the key (8 words * 32bits =
+                               256-bit max key) */
 };
 
 /* Mutex and Semaphore for Thread Safety and Synchronization */
@@ -124,7 +123,7 @@ static int opentitan_aes_hw_flush(mm_reg_t base) {
               base + AES_CTRL_SHADOWED_REG_OFFSET); /* Double-write required for
                                                        all shadowed registers */
 
-  /* Re-poll IDLE bcz control register write may trigger an internal PRNG reseed
+  /* Re-poll IDLE, as control register write may trigger an internal PRNG reseed
    */
   ret = poll_idle(base);
   if (ret != 0) {
@@ -168,27 +167,21 @@ static int opentitan_aes_init(const struct device *dev) {
 
 /* effective_key = SHARE0 XOR SHARE1 */
 static void aes_write_key(
-    mm_reg_t base,
-    const uint32_t
-        *key_words, /* word=32bits // AES-128 gives 4 words, AES-256 gives 8 */
+    mm_reg_t base, const uint32_t *key_words,
     uint32_t key_word_count) /* How many of those words above are real key
                                 material (4 or 8), rest is padding */
 {
   /* share0-share7 */
   for (int i = 0; i < 8; i++) { /* The loop always runs 8 times, all 8 register
                                    slots must be written */
-    uint32_t share0_word =
-        (i < (int)key_word_count)
-            ? key_words[i]
-            : 0u; /* if i is less than the actual key word count, write the real
-                     key word; otherwise write zero for padding */
+    uint32_t share0_word = (i < (int)key_word_count) ? key_words[i] : 0u;
+
     if (i < (int)key_word_count) {
       LOG_DBG("KEY_SHARE0_%d = 0x%08x", i, share0_word);
     }
-    sys_write32(
-        share0_word,
-        base + AES_KEY_SHARE0_0_REG_OFFSET +
-            i * 4); /* jump 4bytes to go to the next SHARE0_i register */
+
+    sys_write32(share0_word, base + AES_KEY_SHARE0_0_REG_OFFSET + i * 4);
+    /* jump 4bytes to go to the next SHARE0_i register */
   }
 
   /* SHARE1 is always zero in v1 (no side-channel masking). */
@@ -299,7 +292,8 @@ opentitan_aes_ecb_op(struct cipher_ctx *ctx,
 /* // cipher_ctx has the session pointer and mode parameters (like IV pointer
    for CBC) */
 { /* cipher_pkt has the input and output buffers and lengths */
-  //                                                                              // REF: https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html
+  // REF:
+  // https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html
   const struct opentitan_aes_session *sess =
       (const struct opentitan_aes_session *)ctx->drv_sessn_state;
   const struct opentitan_aes_config *cfg =
@@ -308,15 +302,13 @@ opentitan_aes_ecb_op(struct cipher_ctx *ctx,
 
   /* ECB has no padding in v1 - caller must supply one or more complete 16-byte
    * blocks. */
-  if (pkt->in_len == 0 ||
-      (pkt->in_len % 16) !=
-          0) { /* in_len: Number of input **bytes** to process. */
+  if (pkt->in_len == 0 || (pkt->in_len % 16) != 0) {
     return -EINVAL;
   }
 
-  uint32_t num_blocks =
-      pkt->in_len / 16; /* number of 16-byte(128bits) blocks to process, used
-                           for loop control below */
+  uint32_t num_blocks = pkt->in_len / 16;
+  /* number of 16-byte(128bits) blocks to process, used
+                       for loop control below */
 
   /* We set up the control register once at the start of the operation, */
   /* and the hardware remains configured for the entire message. */
@@ -370,8 +362,7 @@ opentitan_aes_ecb_op(struct cipher_ctx *ctx,
    */
 
   /* Write the key after confirming the hardware is ready to accept it. */
-  aes_write_key(base, sess->key_words,
-                sess->key_words_count); /* block 0 - outside the loop */
+  aes_write_key(base, sess->key_words, sess->key_words_count);
 
   /* check INPUT_READY reg before writing the first block */
   ret = poll_input_ready(base);
@@ -690,9 +681,9 @@ static int opentitan_aes_begin_session(
                                CRYPTO_CIPHER_ALGO_AES) */
     enum cipher_mode mode,  /* zephyr API enum for mode (ecb, cbc, ctr:
                                CRYPTO_CIPHER_MODE_ECB) */
-    enum cipher_op
-        op_type) /* zephyr API enum for operation type (encrypt/decrypt:
-                    CRYPTO_CIPHER_OP_ENCRYPT/CRYPTO_CIPHER_OP_DECRYPT) */
+    enum cipher_op op_type)
+/* zephyr API enum for operation type (encrypt/decrypt:
+CRYPTO_CIPHER_OP_ENCRYPT/CRYPTO_CIPHER_OP_DECRYPT) */
 {
 
   /* Only AES is supported */
@@ -763,9 +754,7 @@ static int opentitan_aes_begin_session(
   /* This routine locks mutex. If the mutex is locked by another thread, the
    * calling thread waits until the mutex becomes available or until a timeout
    * occurs. */
-  int lock_ret = k_mutex_lock(
-      &data->lock,
-      OPENTITAN_AES_LOCK_TIMEOUT); /* it will return 0 on success */
+  int lock_ret = k_mutex_lock(&data->lock, OPENTITAN_AES_LOCK_TIMEOUT);
   // REF:
   // https://docs.zephyrproject.org/latest/doxygen/html/group__mutex__apis.html#ga850549358645249c285669baa49c33b0
 
@@ -774,9 +763,9 @@ static int opentitan_aes_begin_session(
     return -EBUSY;
   }
 
-  struct opentitan_aes_session *sess =
-      NULL; /* intialize a pointer to the session struct, we will set it to
-               point to the claimed session slot in the pool below */
+  struct opentitan_aes_session *sess = NULL;
+  /* intialize a pointer to the session struct, we will set it to
+  point to the claimed session slot in the pool below */
 
   /* look for the unused session slot(free slot) and make sess pointer point to
    * it! */
@@ -799,12 +788,10 @@ static int opentitan_aes_begin_session(
 
   /* Now we have created a session */
   /* we have to populate this session with the needed info */
-  sess->dev = dev;     /* ecb_op() needs dev->config->base_addr */
-  sess->dir = op_type; /* CRYPTO_CIPHER_OP_ENCRYPT=1, _DECRYPT=0. Will be mapped
-                          to HW values. */
-  sess->reg_ctrl_key_len = reg_ctrl_key_len; /* pre-shifted above for direct use
-                                                in the control register. */
-  sess->key_words_count = key_words_count;   /* 4 or 8; */
+  sess->dev = dev;
+  sess->dir = op_type;
+  sess->reg_ctrl_key_len = reg_ctrl_key_len;
+  sess->key_words_count = key_words_count;
 
   /* NOw we need to copy the *key* data from the caller's app to our session
    * struct! */
@@ -812,9 +799,9 @@ static int opentitan_aes_begin_session(
     sess->key_words[i] = sys_get_le32(ctx->key.bit_stream + i * 4u);
   }
 
-  sess->in_use =
-      true; /* means the session slot is now claimed and occupied by a session,
-               so other threads can't claim it until it's freed. */
+  sess->in_use = true;
+  /* means the session slot is now claimed and occupied by a session,
+   so other threads can't claim it until it's freed. */
 
   /* now after we filled all the session info, we unlock (release) the mutex! */
   /* so other threads can claim other session slots or free this slot if they
@@ -837,10 +824,11 @@ static int opentitan_aes_begin_session(
     LOG_INF("AES session started: mode=CTR key=%u bits", key_len_bits);
   }
 
-  ctx->drv_sessn_state =
-      sess; /* this is how we link the session state to the ctx, so that the
-               ecb_op() can retrieve it later when it needs to access the
-               session info like the key and direction. */
+  ctx->drv_sessn_state = sess;
+  /* this is how we link the session state to the ctx, so that the
+   ecb_op() can retrieve it later when it needs to access the
+   session info like the key and direction. */
+
   // REF:
   // https://docs.zephyrproject.org/latest/doxygen/html/structcipher__ctx.html#a624cf985cf35b3aa8681c3892fd67429
 
@@ -896,9 +884,9 @@ static int opentitan_aes_free_session(const struct device *dev,
    * potentially observe residual key state via timing side-channels. See:
    * https://github.com/lowRISC/opentitan/issues/2382
    */
-  opentitan_aes_hw_flush(
-      cfg->base_addr); /* Scrubs KEY_SHARE0/SHARE1 hardware registers -- memset
-                          above only clears SRAM. */
+  opentitan_aes_hw_flush(cfg->base_addr);
+  /* Scrubs KEY_SHARE0/SHARE1 hardware registers -- memset
+    above only clears SRAM. */
 
   /* After zeroing the session struct, we can safely release the mutex, allowing
    * other threads to claim this now-free session slot or free other slots. */
